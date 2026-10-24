@@ -65,3 +65,25 @@ export interface UserManagementResponse {
   created_at: string;
   updated_at: string;
 }
+
+export type LendingStatus = "lending" | "available";
+
+export interface EquipmentListItemResponse {
+  asset_number: string;
+  name: string;
+  category: string;
+  description: string | null;
+  location: string | null;
+  is_active: boolean;
+  lending_status: LendingStatus;
+  due_date: string | null;
+}
+
+export type ReservationStatus = "approved" | "lending";
+
+export interface ReservationPeriodResponse {
+  start_date: string;
+  due_date: string;
+  status: ReservationStatus;
+  borrower_name: string | null;
+}
