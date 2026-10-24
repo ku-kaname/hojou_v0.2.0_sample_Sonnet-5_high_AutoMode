@@ -1,0 +1,30 @@
+// アプリケーションルーティング（共通基盤）
+//
+// 【概要】
+// 画面遷移（ルーティング）を定義する。ログイン画面は認証不要、それ以外はProtectedRouteで
+// ログイン・初回パスワード変更済みを要求する。各機能群バックログの画面は本ルーティングに追加する。
+
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider } from "./context/AuthProvider";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { Layout } from "./components/Layout";
+import { LoginPage } from "./pages/LoginPage";
+import { PasswordChangePage } from "./pages/PasswordChangePage";
+import { HomePage } from "./pages/HomePage";
+
+export function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route element={<Layout />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/password-change" element={<PasswordChangePage />} />
+          </Route>
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthProvider>
+  );
+}
