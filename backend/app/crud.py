@@ -2,15 +2,67 @@
 データアクセス処理（共通）
 
 【概要】
-ユーザー情報・通知情報に対するDBアクセス処理（データアクセス層）を定義する。他機能群のデータアクセス処理は各機能群バックログで追加する。
+ユーザー情報・通知情報・備品情報（参照系）に対するDBアクセス処理（データアクセス層）を定義する。他機能群のデータアクセス処理は各機能群バックログで追加する。
 """
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.models import LoanRequest, Notification, User
+from app.models import Equipment, LoanRequest, Notification, User
+
+
+@dataclass
+class EquipmentListRow:
+    """
+    備品一覧行
+
+    【概要】
+    備品一覧取得（EQUIPMENTとLOAN_REQUESTの結合結果）の1行を保持する
+
+    【属性】
+    - asset_number (str): 資産番号
+    - name (str): 備品名
+    - category (str): 分類
+    - description (str | None): 説明
+    - location (str | None): 保管場所
+    - is_active (bool): 有効フラグ
+    - lending_status (str): 貸出状況（`available`／`lending`）
+    - due_date (date | None): 返却予定日
+    """
+
+    asset_number: str
+    name: str
+    category: str
+    description: str | None
+    location: str | None
+    is_active: bool
+    lending_status: str
+    due_date: date | None
+
+
+@dataclass
+class ReservationPeriodRow:
+    """
+    予約期間行
+
+    【概要】
+    予約期間一覧取得（LOAN_REQUESTとUSERの結合結果）の1行を保持する
+
+    【属性】
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - status (str): 状態（`approved`／`lending`）
+    - applicant_name (str): 氏名（申請者）
+    """
+
+    start_date: date
+    due_date: date
+    status: str
+    applicant_name: str
+
 
 # ====================================================================================================
 # ユーザー操作
@@ -749,3 +801,193 @@ def exists_lending_loan_request_by_applicant(db: Session, applicant_user_id: int
 
     # 2. 戻り値を返却
     return lending_loan_request_count >= 1
+
+
+# ====================================================================================================
+# 備品管理操作
+# - get_equipments : 備品一覧取得
+# - get_equipment_by_asset_number : 備品取得（資産番号指定）
+# - get_lending_loan_request_by_equipment : 貸出中申請取得（備品指定）
+# - get_approved_or_lending_loan_requests_by_equipment : 予約期間一覧取得（備品指定）
+
+# 設計書：CRUD/備品管理/
+# ====================================================================================================
+
+
+def get_equipments(
+    db: Session,
+    category: str | None,
+    keyword: str | None,
+    is_active: bool | None,
+) -> list[EquipmentListRow]:
+    """
+    備品一覧取得
+
+    設計書：CRUD/備品管理/備品一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 検索条件に応じて備品を一覧取得する。現在の貸出状況を合わせて取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - category (str | None) : 分類検索条件
+    - keyword (str | None) : キーワード検索条件
+    - is_active (bool | None) : 有効フラグ検索条件
+
+    【戻り値】
+    - equipment_list (list[EquipmentListRow]) : 備品一覧情報リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品一覧取得
+    2. 戻り値を返却
+    """
+
+    # 1. 備品一覧取得
+    # 1.(1) EQUIPMENTテーブルと、状態が「貸出中」の申請をLOAN_REQUESTテーブルから左外部結合して取得する
+    query = db.query(Equipment, LoanRequest.due_date).outerjoin(
+        LoanRequest,
+        (LoanRequest.equipment_id == Equipment.id) & (LoanRequest.status == "lending"),
+    )
+    if category is not None:
+        query = query.filter(Equipment.category == category)
+    if keyword is not None:
+        query = query.filter(or_(Equipment.name.like(f"%{keyword}%"), Equipment.description.like(f"%{keyword}%")))
+    if is_active is not None:
+        query = query.filter(Equipment.is_active.is_(is_active))
+    rows = query.order_by(Equipment.asset_number.asc()).all()
+
+    # 1.(2) 取得結果の各行について、返却予定日の有無から貸出状況を判定する
+    equipment_list = []
+    for equipment, due_date in rows:
+        if due_date is not None:
+            lending_status = "lending"
+        else:
+            lending_status = "available"
+        equipment_list.append(
+            EquipmentListRow(
+                asset_number=equipment.asset_number,
+                name=equipment.name,
+                category=equipment.category,
+                description=equipment.description,
+                location=equipment.location,
+                is_active=equipment.is_active,
+                lending_status=lending_status,
+                due_date=due_date,
+            )
+        )
+
+    # 2. 戻り値を返却
+    return equipment_list
+
+
+def get_equipment_by_asset_number(db: Session, asset_number: str) -> Equipment | None:
+    """
+    備品取得（資産番号指定）
+
+    設計書：CRUD/備品管理/備品取得（資産番号指定）_v0.1.0.md
+
+    【処理概要】
+    - 指定した資産番号に一致する備品情報を1件取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - asset_number (str) : 資産番号 (必須)
+
+    【戻り値】
+    - equipment (Equipment | None) : 備品情報。該当がない場合はNone
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品取得
+    2. 戻り値を返却
+    """
+
+    # 1. 備品取得
+    # 2. 戻り値を返却
+    return db.query(Equipment).filter(Equipment.asset_number == asset_number).first()
+
+
+def get_lending_loan_request_by_equipment(db: Session, equipment_internal_id: int) -> LoanRequest | None:
+    """
+    貸出中申請取得（備品指定）
+
+    設計書：CRUD/備品管理/貸出中申請取得（備品指定）_v0.1.0.md
+
+    【処理概要】
+    - 指定した備品について、現在貸出中の申請を1件取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 備品内部ID (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest | None) : 貸出申請情報。該当がない場合はNone
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出中申請取得
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出中申請取得
+    # 2. 戻り値を返却
+    return (
+        db.query(LoanRequest)
+        .filter(LoanRequest.equipment_id == equipment_internal_id, LoanRequest.status == "lending")
+        .first()
+    )
+
+
+def get_approved_or_lending_loan_requests_by_equipment(
+    db: Session, equipment_internal_id: int
+) -> list[ReservationPeriodRow]:
+    """
+    予約期間一覧取得（備品指定）
+
+    設計書：CRUD/備品管理/予約期間一覧取得（備品指定）_v0.1.0.md
+
+    【処理概要】
+    - 指定した備品について、状態が「承認済み」「貸出中」である申請の期間を一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 備品内部ID (必須)
+
+    【戻り値】
+    - reservation_list (list[ReservationPeriodRow]) : 予約期間情報リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 予約期間一覧取得
+    2. 戻り値を返却
+    """
+
+    # 1. 予約期間一覧取得
+    rows = (
+        db.query(LoanRequest, User.name)
+        .join(User, User.id == LoanRequest.applicant_user_id)
+        .filter(LoanRequest.equipment_id == equipment_internal_id, LoanRequest.status.in_(["approved", "lending"]))
+        .order_by(LoanRequest.start_date.asc())
+        .all()
+    )
+    reservation_list = [
+        ReservationPeriodRow(
+            start_date=loan_request.start_date,
+            due_date=loan_request.due_date,
+            status=loan_request.status,
+            applicant_name=applicant_name,
+        )
+        for loan_request, applicant_name in rows
+    ]
+
+    # 2. 戻り値を返却
+    return reservation_list

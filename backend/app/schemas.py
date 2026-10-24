@@ -3,10 +3,10 @@ API入出力DTO
 
 【概要】
 エンドポイント層（main.py）のリクエスト・レスポンスで使用するPydanticスキーマを定義する。
-本ファイルには認証・認可（auth）区分、通知区分のスキーマを記載する。他機能群のスキーマは各機能群バックログで追加する。
+本ファイルには認証・認可（auth）区分、通知区分、ユーザー管理区分、備品管理区分（参照系のみ）のスキーマを記載する。他機能群のスキーマは各機能群バックログで追加する。
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -171,3 +171,42 @@ class UserManagementResponse(BaseModel):
     must_change_password: bool
     created_at: datetime
     updated_at: datetime
+
+
+# ====================================================================================================
+# 備品管理スキーマ
+# - EquipmentListItemResponse : 備品一覧項目応答
+# - ReservationPeriodResponse : 予約期間応答
+
+# 設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+# ====================================================================================================
+
+
+class EquipmentListItemResponse(BaseModel):
+    """
+    備品一覧項目応答
+
+    設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+    """
+
+    asset_number: str
+    name: str
+    category: str
+    description: str | None
+    location: str | None
+    is_active: bool
+    lending_status: str
+    due_date: date | None
+
+
+class ReservationPeriodResponse(BaseModel):
+    """
+    予約期間応答
+
+    設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+    """
+
+    start_date: date
+    due_date: date
+    status: str
+    borrower_name: str | None

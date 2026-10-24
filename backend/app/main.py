@@ -2,7 +2,7 @@
 エンドポイント（共通）
 
 【概要】
-ヘルスチェック・認証・認可（auth）・通知・ユーザー管理の各エンドポイント、およびアプリケーション起動時処理
+ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系）の各エンドポイント、およびアプリケーション起動時処理
 （初期管理者アカウント自動作成・日次バッチ起動定義）を定義する。他機能群のエンドポイントは各機能群バックログで追加する。
 """
 
@@ -10,7 +10,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Path
+from fastapi import Depends, FastAPI, Path, Query
 from pwdlib import PasswordHash
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -18,8 +18,10 @@ from sqlalchemy.orm import Session
 from app import auth, crud, scheduler, services
 from app.database import SessionLocal, get_db
 from app.schemas import (
+    EquipmentListItemResponse,
     NotificationResponse,
     PasswordResetRequest,
+    ReservationPeriodResponse,
     UserCreateRequest,
     UserManagementResponse,
     UserUpdateRequest,
@@ -531,3 +533,135 @@ def reset_user_password_endpoint(
     # 1〜4. 対象ユーザー取得・初期パスワードハッシュ化・パスワード初期化・戻り値を返却
     updated_user = services.reset_user_password(db, user_id, password_reset_request)
     return UserManagementResponse.model_validate(updated_user, from_attributes=True)
+
+
+# ====================================================================================================
+# 備品管理エンドポイント
+# - search_equipment_endpoint : 備品検索・一覧取得
+# - get_equipment_endpoint : 備品詳細取得
+# - get_equipment_reservations_endpoint : 備品予約状況取得
+
+# 設計書：サーバー処理（main）/備品管理/
+# オーケストレーション層（services.py）を経由し、データアクセス層（crud.py）を直接呼び出さない。
+# ====================================================================================================
+
+
+@app.get("/equipment")
+def search_equipment_endpoint(
+    category: str | None = Query(default=None, min_length=0, max_length=50),
+    keyword: str | None = Query(default=None, min_length=0, max_length=100),
+    is_active: bool | None = Query(default=None),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> list[EquipmentListItemResponse]:
+    """
+    備品検索・一覧取得
+
+    設計書：サーバー処理（main）/備品管理/備品検索・一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 要求元が一般ユーザーの場合は有効な備品のみに絞り込み、管理者の場合は有効フラグの指定に応じて絞り込みを行い、一覧取得する。
+
+    【パラメータ】
+    - category (str | None) : 分類
+    - keyword (str | None) : キーワード
+    - is_active (bool | None) : 有効フラグ（管理者のみ有効。一般ユーザーが指定した場合は無視する）
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - equipment_list_response (list[EquipmentListItemResponse]) : 備品一覧要素応答リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 有効フラグ検索条件を算定する
+    2. 備品一覧を取得する
+    3. 戻り値を返却
+    """
+
+    # 1〜2. 有効フラグ検索条件算定・備品一覧取得
+    equipment_list = services.search_equipment(db, current_user.role, category, keyword, is_active)
+
+    # 3. 戻り値を返却
+    return [EquipmentListItemResponse.model_validate(equipment, from_attributes=True) for equipment in equipment_list]
+
+
+@app.get("/equipment/{equipment_id}")
+def get_equipment_endpoint(
+    equipment_id: str = Path(min_length=1, max_length=32),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> EquipmentListItemResponse:
+    """
+    備品詳細取得
+
+    設計書：サーバー処理（main）/備品管理/備品詳細取得_v0.1.0.md
+
+    【処理概要】
+    - 指定した資産番号の備品情報と現在の貸出状況を取得し、レスポンスとして返却する。
+    - 要求元が一般ユーザーの場合、無効化済みの備品は取得できない。
+
+    【パラメータ】
+    - equipment_id (str) : 資産番号 (必須。URLパスの変数名は`equipment_id`とするが、値は資産番号を指定する)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - equipment_response (EquipmentListItemResponse) : 備品一覧要素応答
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(404) : 一般ユーザーが無効化済み備品を取得しようとしている場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 現在の貸出状況を取得する
+    3. 戻り値を返却
+    """
+
+    # 1〜3. 対象備品取得・貸出状況取得・戻り値を返却
+    equipment = services.get_equipment(db, current_user.role, equipment_id)
+    return EquipmentListItemResponse.model_validate(equipment, from_attributes=True)
+
+
+@app.get("/equipment/{equipment_id}/reservations")
+def get_equipment_reservations_endpoint(
+    equipment_id: str = Path(min_length=1, max_length=32),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> list[ReservationPeriodResponse]:
+    """
+    備品予約状況取得
+
+    設計書：サーバー処理（main）/備品管理/備品予約状況取得_v0.1.0.md
+
+    【処理概要】
+    - 対象備品の、状態が「承認済み」「貸出中」の申請を開始日昇順で取得し、レスポンスとして返却する。
+    - 借用者氏名は、要求元が管理者の場合のみ設定する。
+
+    【パラメータ】
+    - equipment_id (str) : 資産番号 (必須。URLパスの変数名は`equipment_id`とするが、値は資産番号を指定する)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - reservation_response_list (list[ReservationPeriodResponse]) : 予約期間応答リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(404) : 一般ユーザーが無効化済み備品の予約状況を取得しようとしている場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 予約期間一覧を取得する
+    3. 借用者氏名を設定する
+    4. 戻り値を返却
+    """
+
+    # 1〜4. 対象備品取得・予約期間一覧取得・借用者氏名設定・戻り値を返却
+    reservation_list = services.get_equipment_reservations(db, current_user.role, equipment_id)
+    return [
+        ReservationPeriodResponse.model_validate(reservation, from_attributes=True) for reservation in reservation_list
+    ]

@@ -22,6 +22,7 @@ export function Layout() {
       <header className="app-header">
         <Link to="/">社内備品貸出管理システム</Link>
         <div className="app-header-actions">
+          {user !== null && <Link to="/equipment">備品一覧</Link>}
           {user !== null && user.role === "admin" && <Link to="/users">ユーザー管理</Link>}
           {user !== null && <span>{user.name}さん</span>}
           <NotificationBell />

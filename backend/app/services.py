@@ -2,10 +2,13 @@
 オーケストレーション処理（共通）
 
 【概要】
-通知一覧取得・通知既読化、ユーザー管理（登録・一覧取得・詳細取得・編集・無効化・再有効化・パスワード初期化）の
-オーケストレーション処理を定義する。貸出・返却機能群の日次バッチ本体（ノーショー自動取消・期限通知生成）は、
-貸出・返却機能群バックログで本ファイルに追加する。
+通知一覧取得・通知既読化、ユーザー管理（登録・一覧取得・詳細取得・編集・無効化・再有効化・パスワード初期化）、
+備品管理（検索・一覧取得、詳細取得、予約状況取得）のオーケストレーション処理を定義する。
+貸出・返却機能群の日次バッチ本体（ノーショー自動取消・期限通知生成）は、貸出・返却機能群バックログで本ファイルに追加する。
 """
+
+from dataclasses import dataclass
+from datetime import date
 
 from fastapi import HTTPException
 from pwdlib import PasswordHash
@@ -16,6 +19,27 @@ from app.models import Notification, User
 from app.schemas import PasswordResetRequest, UserCreateRequest, UserUpdateRequest
 
 _password_hash = PasswordHash.recommended()
+
+
+@dataclass
+class ReservationPeriodRow:
+    """
+    予約期間行
+
+    【概要】
+    予約期間一覧取得結果に、借用者氏名の可視性制御を適用した1行を保持する
+
+    【属性】
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - status (str): 状態（`approved`／`lending`）
+    - borrower_name (str | None): 借用者氏名
+    """
+
+    start_date: date
+    due_date: date
+    status: str
+    borrower_name: str | None
 
 # ====================================================================================================
 # 通知操作
@@ -426,3 +450,177 @@ def reset_user_password(db: Session, user_id: str, password_reset_request: Passw
 
     # 4. 戻り値を返却
     return updated_user
+
+
+# ====================================================================================================
+# 備品管理操作
+# - search_equipment : 備品検索・一覧取得
+# - get_equipment : 備品詳細取得
+# - get_equipment_reservations : 備品予約状況取得
+
+# 設計書：サーバー処理（main）/備品管理/
+# ====================================================================================================
+
+
+def search_equipment(
+    db: Session,
+    role: str,
+    category: str | None,
+    keyword: str | None,
+    is_active: bool | None,
+) -> list[crud.EquipmentListRow]:
+    """
+    備品検索・一覧取得
+
+    設計書：サーバー処理（main）/備品管理/備品検索・一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 要求元が一般ユーザーの場合は有効な備品のみに絞り込み、管理者の場合は有効フラグの指定に応じて絞り込みを行い、一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - role (str) : ログインユーザーのロール (必須)
+    - category (str | None) : 分類検索条件
+    - keyword (str | None) : キーワード検索条件
+    - is_active (bool | None) : 有効フラグ検索条件（管理者のみ有効。一般ユーザーが指定した場合は無視する）
+
+    【戻り値】
+    - equipment_list (list[crud.EquipmentListRow]) : 備品一覧情報リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 有効フラグ検索条件を算定する
+    2. 備品一覧を取得する
+    3. 戻り値を返却
+    """
+
+    # 1. 有効フラグ検索条件を算定する
+    active_filter: bool | None
+    if role != "admin":
+        active_filter = True
+    else:
+        active_filter = is_active
+
+    # 2. 備品一覧を取得する
+    equipment_list = crud.get_equipments(db, category, keyword, active_filter)
+
+    # 3. 戻り値を返却
+    return equipment_list
+
+
+def get_equipment(db: Session, role: str, asset_number: str) -> crud.EquipmentListRow:
+    """
+    備品詳細取得
+
+    設計書：サーバー処理（main）/備品管理/備品詳細取得_v0.1.0.md
+
+    【処理概要】
+    - 対象備品の情報と現在の貸出状況を取得する。
+    - 要求元が一般ユーザーの場合、無効化済みの備品は取得できない。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - role (str) : ログインユーザーのロール (必須)
+    - asset_number (str) : 資産番号 (必須)
+
+    【戻り値】
+    - equipment (crud.EquipmentListRow) : 備品情報（貸出状況を含む）
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(404) : 一般ユーザーが無効化済み備品を取得しようとしている場合（存在有無を判別できないよう、取得できない場合と同様に扱う）
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 現在の貸出状況を取得する
+    3. 戻り値を返却
+    """
+
+    # 1. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_asset_number(db, asset_number)
+    if target_equipment is None:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+    if role != "admin" and not target_equipment.is_active:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+
+    # 2. 現在の貸出状況を取得する
+    lending_loan_request = crud.get_lending_loan_request_by_equipment(db, target_equipment.id)
+    if lending_loan_request is not None:
+        lending_status = "lending"
+        due_date = lending_loan_request.due_date
+    else:
+        lending_status = "available"
+        due_date = None
+
+    # 3. 戻り値を返却
+    return crud.EquipmentListRow(
+        asset_number=target_equipment.asset_number,
+        name=target_equipment.name,
+        category=target_equipment.category,
+        description=target_equipment.description,
+        location=target_equipment.location,
+        is_active=target_equipment.is_active,
+        lending_status=lending_status,
+        due_date=due_date,
+    )
+
+
+def get_equipment_reservations(db: Session, role: str, asset_number: str) -> list[ReservationPeriodRow]:
+    """
+    備品予約状況取得
+
+    設計書：サーバー処理（main）/備品管理/備品予約状況取得_v0.1.0.md
+
+    【処理概要】
+    - 対象備品の、状態が「承認済み」「貸出中」の申請を開始日昇順で取得する。
+    - 借用者氏名は、要求元が管理者の場合のみ設定する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - role (str) : ログインユーザーのロール (必須)
+    - asset_number (str) : 資産番号 (必須)
+
+    【戻り値】
+    - reservation_list (list[ReservationPeriodRow]) : 予約期間情報リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(404) : 一般ユーザーが無効化済み備品の予約状況を取得しようとしている場合（存在有無を判別できないよう、取得できない場合と同様に扱う）
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 予約期間一覧を取得する
+    3. 借用者氏名を設定する
+    4. 戻り値を返却
+    """
+
+    # 1. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_asset_number(db, asset_number)
+    if target_equipment is None:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+    if role != "admin" and not target_equipment.is_active:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+
+    # 2. 予約期間一覧を取得する
+    reservation_rows = crud.get_approved_or_lending_loan_requests_by_equipment(db, target_equipment.id)
+
+    # 3. 借用者氏名を設定する
+    reservation_list = []
+    for reservation_row in reservation_rows:
+        if role == "admin":
+            borrower_name = reservation_row.applicant_name
+        else:
+            borrower_name = None
+        reservation_list.append(
+            ReservationPeriodRow(
+                start_date=reservation_row.start_date,
+                due_date=reservation_row.due_date,
+                status=reservation_row.status,
+                borrower_name=borrower_name,
+            )
+        )
+
+    # 4. 戻り値を返却
+    return reservation_list

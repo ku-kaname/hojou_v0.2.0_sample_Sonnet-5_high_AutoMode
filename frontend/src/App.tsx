@@ -13,6 +13,8 @@ import { LoginPage } from "./pages/LoginPage";
 import { PasswordChangePage } from "./pages/PasswordChangePage";
 import { HomePage } from "./pages/HomePage";
 import { UserManagementPage } from "./pages/UserManagementPage";
+import { EquipmentListPage } from "./pages/EquipmentListPage";
+import { EquipmentDetailPage } from "./pages/EquipmentDetailPage";
 
 export function App() {
   return (
@@ -23,6 +25,8 @@ export function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/password-change" element={<PasswordChangePage />} />
+            <Route path="/equipment" element={<EquipmentListPage />} />
+            <Route path="/equipment/:assetNumber" element={<EquipmentDetailPage />} />
             <Route element={<AdminRoute />}>
               <Route path="/users" element={<UserManagementPage />} />
             </Route>
