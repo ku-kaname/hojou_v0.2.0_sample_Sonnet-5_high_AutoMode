@@ -36,3 +36,32 @@ export interface NotificationResponse {
   is_read: boolean;
   created_at: string;
 }
+
+export interface UserCreateRequest {
+  user_id: string;
+  name: string;
+  department: string | null;
+  password: string;
+  role: "general" | "admin";
+}
+
+export interface UserUpdateRequest {
+  name: string;
+  department: string | null;
+  role: "general" | "admin";
+}
+
+export interface PasswordResetRequest {
+  password: string;
+}
+
+export interface UserManagementResponse {
+  user_id: string;
+  name: string;
+  department: string | null;
+  role: "general" | "admin";
+  is_active: boolean;
+  must_change_password: boolean;
+  created_at: string;
+  updated_at: string;
+}

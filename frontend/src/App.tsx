@@ -7,10 +7,12 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthProvider";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AdminRoute } from "./components/AdminRoute";
 import { Layout } from "./components/Layout";
 import { LoginPage } from "./pages/LoginPage";
 import { PasswordChangePage } from "./pages/PasswordChangePage";
 import { HomePage } from "./pages/HomePage";
+import { UserManagementPage } from "./pages/UserManagementPage";
 
 export function App() {
   return (
@@ -21,6 +23,9 @@ export function App() {
           <Route element={<Layout />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/password-change" element={<PasswordChangePage />} />
+            <Route element={<AdminRoute />}>
+              <Route path="/users" element={<UserManagementPage />} />
+            </Route>
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

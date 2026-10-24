@@ -107,3 +107,67 @@ class NotificationResponse(BaseModel):
     loan_request_id: int
     is_read: bool
     created_at: datetime
+
+
+# ====================================================================================================
+# ユーザー管理スキーマ
+# - UserCreateRequest : ユーザー作成リクエスト
+# - UserUpdateRequest : ユーザー編集リクエスト
+# - PasswordResetRequest : パスワード初期化リクエスト
+# - UserManagementResponse : ユーザー応答
+
+# 設計書：スキーマ（schemas）/ユーザー操作_v0.2.0.md
+# ====================================================================================================
+
+
+class UserCreateRequest(BaseModel):
+    """
+    ユーザー作成リクエスト
+
+    設計書：スキーマ（schemas）/ユーザー操作_v0.2.0.md
+    """
+
+    user_id: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=50)
+    department: str | None = Field(default=None, max_length=50)
+    password: str = Field(min_length=8, max_length=255)
+    role: str
+
+
+class UserUpdateRequest(BaseModel):
+    """
+    ユーザー編集リクエスト
+
+    設計書：スキーマ（schemas）/ユーザー操作_v0.2.0.md
+    """
+
+    name: str = Field(min_length=1, max_length=50)
+    department: str | None = Field(default=None, max_length=50)
+    role: str
+
+
+class PasswordResetRequest(BaseModel):
+    """
+    パスワード初期化リクエスト
+
+    設計書：スキーマ（schemas）/ユーザー操作_v0.2.0.md
+    """
+
+    password: str = Field(min_length=8, max_length=255)
+
+
+class UserManagementResponse(BaseModel):
+    """
+    ユーザー応答
+
+    設計書：スキーマ（schemas）/ユーザー操作_v0.2.0.md
+    """
+
+    user_id: str
+    name: str
+    department: str | None
+    role: str
+    is_active: bool
+    must_change_password: bool
+    created_at: datetime
+    updated_at: datetime

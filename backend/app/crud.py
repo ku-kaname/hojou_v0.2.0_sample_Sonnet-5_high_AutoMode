@@ -7,9 +7,10 @@
 
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import Notification, User
+from app.models import LoanRequest, Notification, User
 
 # ====================================================================================================
 # ユーザー操作
@@ -442,3 +443,309 @@ def create_notification(
 
     # 2. 戻り値を返却
     return notification
+
+
+# ====================================================================================================
+# ユーザー管理操作
+# - get_users : ユーザー一覧取得
+# - update_user : ユーザー編集
+# - disable_user : ユーザー無効化
+# - enable_user : ユーザー再有効化
+# - reset_user_password : パスワード初期化
+# - count_active_admins : 有効管理者数取得
+# - cancel_pending_and_approved_loan_requests_by_applicant : 申請一括取消（申請者指定）
+# - exists_lending_loan_request_by_applicant : 貸出中申請存在確認（申請者指定）
+
+# 設計書：CRUD/ユーザー管理/
+# ====================================================================================================
+
+
+def get_users(db: Session) -> list[User]:
+    """
+    ユーザー一覧取得
+
+    設計書：CRUD/ユーザー管理/ユーザー一覧取得_v0.1.0.md
+
+    【処理概要】
+    - USERテーブルの全レコードをユーザーID昇順で取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - user_list (list[User]) : ユーザー情報リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. ユーザー一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1. ユーザー一覧を取得する
+    # 2. 戻り値を返却
+    return db.query(User).order_by(User.user_id.asc()).all()
+
+
+def update_user(
+    db: Session,
+    user_internal_id: int,
+    name: str,
+    department: str | None,
+    role: str,
+    token_version: int,
+) -> User:
+    """
+    ユーザー編集
+
+    設計書：CRUD/ユーザー管理/ユーザー編集_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致するユーザー情報の氏名・所属・ロール・トークン世代・更新日時を更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - user_internal_id (int) : 内部ID (必須)
+    - name (str) : 氏名 (必須)
+    - department (str | None) : 所属
+    - role (str) : ロール (必須)
+    - token_version (int) : トークン世代 (必須)
+
+    【戻り値】
+    - user (User) : ユーザー情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. ユーザー編集
+    2. 戻り値を返却
+    """
+
+    # 1. ユーザー編集
+    user = db.query(User).filter(User.id == user_internal_id).one()
+    user.name = name
+    user.department = department
+    user.role = role
+    user.token_version = token_version
+    user.updated_at = datetime.now()
+    db.commit()
+    db.refresh(user)
+
+    # 2. 戻り値を返却
+    return user
+
+
+def disable_user(db: Session, user_internal_id: int, token_version: int) -> User:
+    """
+    ユーザー無効化
+
+    設計書：CRUD/ユーザー管理/ユーザー無効化_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致するユーザー情報の有効フラグを`false`に更新し、トークン世代を更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - user_internal_id (int) : 内部ID (必須)
+    - token_version (int) : トークン世代 (必須)
+
+    【戻り値】
+    - user (User) : ユーザー情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. ユーザー無効化
+    2. 戻り値を返却
+    """
+
+    # 1. ユーザー無効化
+    user = db.query(User).filter(User.id == user_internal_id).one()
+    user.is_active = False
+    user.token_version = token_version
+    user.updated_at = datetime.now()
+    db.commit()
+    db.refresh(user)
+
+    # 2. 戻り値を返却
+    return user
+
+
+def enable_user(db: Session, user_internal_id: int) -> User:
+    """
+    ユーザー再有効化
+
+    設計書：CRUD/ユーザー管理/ユーザー再有効化_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致するユーザー情報の有効フラグを`true`に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - user_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - user (User) : ユーザー情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. ユーザー再有効化
+    2. 戻り値を返却
+    """
+
+    # 1. ユーザー再有効化
+    user = db.query(User).filter(User.id == user_internal_id).one()
+    user.is_active = True
+    user.updated_at = datetime.now()
+    db.commit()
+    db.refresh(user)
+
+    # 2. 戻り値を返却
+    return user
+
+
+def reset_user_password(db: Session, user_internal_id: int, hashed_password: str, token_version: int) -> User:
+    """
+    パスワード初期化
+
+    設計書：CRUD/ユーザー管理/パスワード初期化_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致するユーザー情報のパスワードハッシュを更新し、初回パスワード変更要否フラグを`true`に設定し、トークン世代を更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - user_internal_id (int) : 内部ID (必須)
+    - hashed_password (str) : パスワードハッシュ (必須)
+    - token_version (int) : トークン世代 (必須)
+
+    【戻り値】
+    - user (User) : ユーザー情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. パスワード初期化
+    2. 戻り値を返却
+    """
+
+    # 1. パスワード初期化
+    user = db.query(User).filter(User.id == user_internal_id).one()
+    user.hashed_password = hashed_password
+    user.must_change_password = True
+    user.token_version = token_version
+    user.updated_at = datetime.now()
+    db.commit()
+    db.refresh(user)
+
+    # 2. 戻り値を返却
+    return user
+
+
+def count_active_admins(db: Session) -> int:
+    """
+    有効管理者数取得
+
+    設計書：CRUD/ユーザー管理/有効管理者数取得_v0.1.0.md
+
+    【処理概要】
+    - ロールが管理者かつ有効フラグが`true`であるユーザーの件数をUSERテーブルから取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - active_admin_count (int) : 有効管理者数
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 有効管理者数取得
+    2. 戻り値を返却
+    """
+
+    # 1. 有効管理者数取得
+    # 2. 戻り値を返却
+    return db.query(func.count()).select_from(User).filter(User.role == "admin", User.is_active.is_(True)).scalar()
+
+
+def cancel_pending_and_approved_loan_requests_by_applicant(db: Session, applicant_user_id: int) -> None:
+    """
+    申請一括取消（申請者指定）
+
+    設計書：CRUD/ユーザー管理/申請一括取消（申請者指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の申請者ユーザーIDに一致し、状態が申請中または承認済みである申請を、LOAN_REQUESTテーブルで取消状態に更新する。
+    - 取消した者ユーザーIDは、自動取消のため設定しない（空のまま）。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - applicant_user_id (int) : 申請者ユーザーID (必須)
+
+    【戻り値】
+    - なし
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 申請一括取消
+    """
+
+    # 1. 申請一括取消
+    now = datetime.now()
+    db.query(LoanRequest).filter(
+        LoanRequest.applicant_user_id == applicant_user_id,
+        LoanRequest.status.in_(["pending", "approved"]),
+    ).update(
+        {
+            "status": "cancelled",
+            "rejection_reason": "ユーザー無効化による自動取消",
+            "cancelled_at": now,
+        }
+    )
+    db.commit()
+
+
+def exists_lending_loan_request_by_applicant(db: Session, applicant_user_id: int) -> bool:
+    """
+    貸出中申請存在確認（申請者指定）
+
+    設計書：CRUD/ユーザー管理/貸出中申請存在確認（申請者指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の申請者ユーザーIDに一致し、状態が貸出中である申請がLOAN_REQUESTテーブルに存在するかどうかを取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - applicant_user_id (int) : 申請者ユーザーID (必須)
+
+    【戻り値】
+    - exists (bool) : 貸出中の申請が存在する場合`true`、存在しない場合`false`
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出中申請存在確認
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出中申請存在確認
+    lending_loan_request_count = (
+        db.query(func.count())
+        .select_from(LoanRequest)
+        .filter(LoanRequest.applicant_user_id == applicant_user_id, LoanRequest.status == "lending")
+        .scalar()
+    )
+
+    # 2. 戻り値を返却
+    return lending_loan_request_count >= 1
