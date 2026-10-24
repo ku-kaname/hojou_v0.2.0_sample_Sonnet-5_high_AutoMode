@@ -3,3 +3,18 @@
 # 本リポジトリには実体を含めない（hojou/README.md「導入手順」参照）。
 .claude/skills
 .agents/skills
+
+# Python（backend）
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.venv/
+backend/**/*.db
+backend/**/.pytest_cache/
+
+# Node（frontend）
+frontend/node_modules/
+frontend/dist/
+frontend/**/*.tsbuildinfo
+
+# OS
+.DS_Store
