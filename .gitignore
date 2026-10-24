@@ -1,0 +1,5 @@
+# hojouのSkill参照用リンク（.claude/skills・.agents/skills）は、
+# hojou/scripts/setup-skills-link.ps1 でクローン後に再作成する機体ローカルの参照であり、
+# 本リポジトリには実体を含めない（hojou/README.md「導入手順」参照）。
+.claude/skills
+.agents/skills
