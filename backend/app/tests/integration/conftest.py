@@ -164,20 +164,30 @@ def make_loan_request(db: Session):
     貸出申請作成ヘルパー（状態指定）
 
     【概要】
-    備品・貸出申請レコードを作成し、指定した状態（status）に更新したうえで貸出申請を返却する。
+    貸出申請レコードを作成し、指定した状態（status）に更新したうえで貸出申請を返却する。
     ユーザー無効化テスト等、申請中（pending）以外の状態（承認済み・貸出中等）が必要な場合に使用する。
-    資産番号はmake_notification_targetの連番と重複しないよう、呼び出しごとに一意な値を発行する。
+    equipment_internal_idを指定しない場合は、新規の備品（資産番号は呼び出しごとに一意な値を発行）を
+    作成したうえで申請を作成する。既存の備品に対して複数件の申請を作成したい場合（予約状況取得テスト等）は、
+    equipment_internal_idに対象備品の内部IDを指定する。
     """
 
-    def _make_loan_request(applicant_user_internal_id: int, status: str = "pending"):
-        asset_number = f"AST-TEST-{uuid.uuid4().hex[:8]}"
-        equipment = crud.create_equipment(db, asset_number, "結合テスト用備品", "結合テスト", None, None)
+    def _make_loan_request(
+        applicant_user_internal_id: int,
+        status: str = "pending",
+        equipment_internal_id: int | None = None,
+        start_date: date = date(2026, 11, 1),
+        due_date: date = date(2026, 11, 10),
+    ):
+        if equipment_internal_id is None:
+            asset_number = f"AST-TEST-{uuid.uuid4().hex[:8]}"
+            equipment = crud.create_equipment(db, asset_number, "結合テスト用備品", "結合テスト", None, None)
+            equipment_internal_id = equipment.id
         loan_request = crud.create_loan_request(
             db,
-            equipment.id,
+            equipment_internal_id,
             applicant_user_internal_id,
-            date(2026, 11, 1),
-            date(2026, 11, 10),
+            start_date,
+            due_date,
             "結合テスト用",
         )
         loan_request.status = status
@@ -186,3 +196,31 @@ def make_loan_request(db: Session):
         return loan_request
 
     return _make_loan_request
+
+
+@pytest.fixture
+def make_equipment(db: Session):
+    """
+    テスト備品作成ヘルパー
+
+    【概要】
+    資産番号・備品名・分類・説明・保管場所を指定して備品を作成する。無効化済み状態（is_active=False）も
+    指定できる。資産番号を指定しない場合は、呼び出しごとに一意な値を発行する。
+    """
+
+    def _make_equipment(
+        name: str = "結合テスト用備品",
+        category: str = "結合テスト",
+        description: str | None = None,
+        location: str | None = None,
+        is_active: bool = True,
+        asset_number: str | None = None,
+    ):
+        resolved_asset_number = asset_number or f"AST-TEST-{uuid.uuid4().hex[:8]}"
+        equipment = crud.create_equipment(db, resolved_asset_number, name, category, description, location)
+        equipment.is_active = is_active
+        db.commit()
+        db.refresh(equipment)
+        return equipment
+
+    return _make_equipment
