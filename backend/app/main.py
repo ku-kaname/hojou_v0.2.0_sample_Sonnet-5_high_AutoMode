@@ -2,7 +2,7 @@
 エンドポイント（共通）
 
 【概要】
-ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系・登録管理系）・貸出申請・承認の各エンドポイント、
+ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系・登録管理系）・貸出申請・承認・貸出・返却の各エンドポイント、
 およびアプリケーション起動時処理（初期管理者アカウント自動作成・日次バッチ起動定義）を定義する。他機能群のエンドポイントは各機能群バックログで追加する。
 """
 
@@ -23,10 +23,12 @@ from app.schemas import (
     EquipmentListItemResponse,
     EquipmentResponse,
     EquipmentUpdateRequest,
+    LoanLendReturnResponse,
     LoanRequestAdminCancelRequest,
     LoanRequestCreateRequest,
     LoanRequestRejectRequest,
     LoanRequestResponse,
+    LoanRequestReturnRequest,
     NotificationResponse,
     PasswordResetRequest,
     PendingLoanRequestListItemResponse,
@@ -1171,3 +1173,111 @@ def admin_cancel_loan_request_endpoint(
 
     # 5. 戻り値を返却
     return LoanRequestResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+# ====================================================================================================
+# 貸出・返却エンドポイント
+# - lend_loan_request_endpoint : 貸出処理
+# - return_loan_request_endpoint : 返却処理
+
+# 設計書：サーバー処理（main）/貸出・返却/
+# オーケストレーション層（services.py）を経由し、データアクセス層（crud.py）を直接呼び出さない。
+# ====================================================================================================
+
+
+@app.put("/loan-requests/{loan_request_id}/lend")
+def lend_loan_request_endpoint(
+    loan_request_id: int,
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanLendReturnResponse:
+    """
+    貸出処理
+
+    設計書：サーバー処理（main）/貸出・返却/貸出処理_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、承認済みの貸出申請に対して備品を貸し出す。
+    - 対象の貸出申請を取得し、状態が「承認済み」であること、開始日が今日以前であることを確認する。
+    - 対象備品を取得し、無効化されていないこと、貸出中の別申請が存在しないことを確認する。
+    - 申請を貸出中状態に更新する。
+
+    【パラメータ】
+    - loan_request_id (int) : 内部ID (必須)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_lend_return_response (LoanLendReturnResponse) : 貸出・返却応答
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 貸出処理可能な状態ではない場合
+    - HTTPException(400) : 開始日前のため貸出処理できない場合
+    - HTTPException(400) : 対象備品が無効化されている場合
+    - HTTPException(400) : 同一備品が既に貸出中の場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 対象備品を取得する
+    3. 貸出中の別申請が存在しないことを確認する
+    4. 貸出処理する
+    5. 貸出申請の詳細を取得する
+    6. 戻り値を返却
+    """
+
+    # 1〜5. 対象の貸出申請取得・対象備品取得・貸出中別申請確認・貸出処理・貸出申請詳細取得
+    loan_request_detail = services.lend_loan_request(db, loan_request_id, current_user.id)
+
+    # 6. 戻り値を返却
+    return LoanLendReturnResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+@app.put("/loan-requests/{loan_request_id}/return")
+def return_loan_request_endpoint(
+    loan_request_return_request: LoanRequestReturnRequest,
+    loan_request_id: int,
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanLendReturnResponse:
+    """
+    返却処理
+
+    設計書：サーバー処理（main）/貸出・返却/返却処理_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、貸出中の貸出申請に対して備品の返却を記録する。
+    - 対象の貸出申請を取得し、状態が「貸出中」であることを確認する。
+    - 申請を返却済み状態に更新する。返却日時はサーバー時刻を自動記録し、状態メモを任意で残せる。
+
+    【パラメータ】
+    - loan_request_return_request (LoanRequestReturnRequest) : 返却処理リクエスト (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_lend_return_response (LoanLendReturnResponse) : 貸出・返却応答
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 返却処理可能な状態ではない場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 返却処理する
+    3. 貸出申請の詳細を取得する
+    4. 戻り値を返却
+    """
+
+    # 1〜3. 対象の貸出申請取得・返却処理・貸出申請詳細取得
+    loan_request_detail = services.return_loan_request(
+        db, loan_request_id, current_user.id, loan_request_return_request
+    )
+
+    # 4. 戻り値を返却
+    return LoanLendReturnResponse.model_validate(loan_request_detail, from_attributes=True)
