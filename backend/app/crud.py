@@ -1059,6 +1059,7 @@ def create_equipment(
     """
 
     # 1. 備品登録
+    now = datetime.now()
     equipment = Equipment(
         asset_number=asset_number,
         name=name,
@@ -1066,7 +1067,8 @@ def create_equipment(
         description=description,
         location=location,
         is_active=True,
-        created_at=datetime.now(),
+        created_at=now,
+        updated_at=now,
     )
     db.add(equipment)
     db.commit()
@@ -1288,7 +1290,7 @@ def bulk_create_equipments(db: Session, equipment_list: list[EquipmentImportRow]
     """
 
     # 1. 備品一括登録
-    created_at = datetime.now()
+    now = datetime.now()
     for equipment_row in equipment_list:
         db.add(
             Equipment(
@@ -1298,7 +1300,8 @@ def bulk_create_equipments(db: Session, equipment_list: list[EquipmentImportRow]
                 description=equipment_row.description,
                 location=equipment_row.location,
                 is_active=True,
-                created_at=created_at,
+                created_at=now,
+                updated_at=now,
             )
         )
     db.commit()
