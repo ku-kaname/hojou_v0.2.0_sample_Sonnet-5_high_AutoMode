@@ -3,7 +3,7 @@ API入出力DTO
 
 【概要】
 エンドポイント層（main.py）のリクエスト・レスポンスで使用するPydanticスキーマを定義する。
-本ファイルには認証・認可（auth）区分、通知区分、ユーザー管理区分、備品管理区分（参照系のみ）のスキーマを記載する。他機能群のスキーマは各機能群バックログで追加する。
+本ファイルには認証・認可（auth）区分、通知区分、ユーザー管理区分、備品管理区分のスキーマを記載する。他機能群のスキーマは各機能群バックログで追加する。
 """
 
 from datetime import date, datetime
@@ -175,11 +175,59 @@ class UserManagementResponse(BaseModel):
 
 # ====================================================================================================
 # 備品管理スキーマ
+# - EquipmentCreateRequest : 備品作成リクエスト
+# - EquipmentUpdateRequest : 備品編集リクエスト
+# - EquipmentResponse : 備品応答
 # - EquipmentListItemResponse : 備品一覧項目応答
 # - ReservationPeriodResponse : 予約期間応答
+# - EquipmentBulkImportResponse : 備品CSV一括登録応答
 
 # 設計書：スキーマ（schemas）/備品操作_v0.1.0.md
 # ====================================================================================================
+
+
+class EquipmentCreateRequest(BaseModel):
+    """
+    備品作成リクエスト
+
+    設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+    """
+
+    asset_number: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9-]+$")
+    name: str = Field(min_length=1, max_length=100)
+    category: str = Field(min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=500)
+    location: str | None = Field(default=None, max_length=100)
+
+
+class EquipmentUpdateRequest(BaseModel):
+    """
+    備品編集リクエスト
+
+    設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+    """
+
+    name: str = Field(min_length=1, max_length=100)
+    category: str = Field(min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=500)
+    location: str | None = Field(default=None, max_length=100)
+
+
+class EquipmentResponse(BaseModel):
+    """
+    備品応答
+
+    設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+    """
+
+    asset_number: str
+    name: str
+    category: str
+    description: str | None
+    location: str | None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 class EquipmentListItemResponse(BaseModel):
@@ -210,3 +258,13 @@ class ReservationPeriodResponse(BaseModel):
     due_date: date
     status: str
     borrower_name: str | None
+
+
+class EquipmentBulkImportResponse(BaseModel):
+    """
+    備品CSV一括登録応答
+
+    設計書：スキーマ（schemas）/備品操作_v0.1.0.md
+    """
+
+    registered_count: int

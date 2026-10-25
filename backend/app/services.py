@@ -3,10 +3,13 @@
 
 【概要】
 通知一覧取得・通知既読化、ユーザー管理（登録・一覧取得・詳細取得・編集・無効化・再有効化・パスワード初期化）、
-備品管理（検索・一覧取得、詳細取得、予約状況取得）のオーケストレーション処理を定義する。
+備品管理（検索・一覧取得、詳細取得、予約状況取得、登録、編集、無効化、再有効化、CSV一括登録）のオーケストレーション処理を定義する。
 貸出・返却機能群の日次バッチ本体（ノーショー自動取消・期限通知生成）は、貸出・返却機能群バックログで本ファイルに追加する。
 """
 
+import csv
+import io
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -15,8 +18,14 @@ from pwdlib import PasswordHash
 from sqlalchemy.orm import Session
 
 from app import crud
-from app.models import Notification, User
-from app.schemas import PasswordResetRequest, UserCreateRequest, UserUpdateRequest
+from app.models import Equipment, Notification, User
+from app.schemas import (
+    EquipmentCreateRequest,
+    EquipmentUpdateRequest,
+    PasswordResetRequest,
+    UserCreateRequest,
+    UserUpdateRequest,
+)
 
 _password_hash = PasswordHash.recommended()
 
@@ -457,6 +466,11 @@ def reset_user_password(db: Session, user_id: str, password_reset_request: Passw
 # - search_equipment : 備品検索・一覧取得
 # - get_equipment : 備品詳細取得
 # - get_equipment_reservations : 備品予約状況取得
+# - create_equipment : 備品登録
+# - update_equipment : 備品編集
+# - disable_equipment : 備品無効化
+# - enable_equipment : 備品再有効化
+# - bulk_import_equipment : 備品CSV一括登録
 
 # 設計書：サーバー処理（main）/備品管理/
 # ====================================================================================================
@@ -624,3 +638,336 @@ def get_equipment_reservations(db: Session, role: str, asset_number: str) -> lis
 
     # 4. 戻り値を返却
     return reservation_list
+
+
+_ASSET_NUMBER_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,32}$")
+_EQUIPMENT_CSV_HEADER = ["資産番号", "備品名", "分類", "説明", "保管場所"]
+_EQUIPMENT_CSV_MAX_SIZE = 5 * 1024 * 1024
+_EQUIPMENT_CSV_MAX_ROWS = 1000
+
+
+@dataclass
+class EquipmentCsvRowError:
+    """
+    備品CSV行エラー
+
+    【概要】
+    備品CSV一括登録の検証エラー一覧の1要素（行番号とエラー内容）を保持する
+
+    【属性】
+    - row_number (int): 行番号（ヘッダー行を1行目とする）
+    - error_message (str): エラー内容
+    """
+
+    row_number: int
+    error_message: str
+
+
+def create_equipment(db: Session, equipment_create_request: EquipmentCreateRequest) -> Equipment:
+    """
+    備品登録
+
+    設計書：サーバー処理（main）/備品管理/備品登録_v0.1.0.md
+
+    【処理概要】
+    - 資産番号の重複がないことを確認し、備品を新規登録する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_create_request (EquipmentCreateRequest) : 備品作成リクエスト (必須)
+
+    【戻り値】
+    - equipment (Equipment) : 登録した備品情報
+
+    【例外処理】
+    - HTTPException(400) : 資産番号が既に使用されている場合
+
+    【処理フロー】
+    1. 資産番号重複を確認する
+    2. 備品を登録する
+    3. 戻り値を返却
+    """
+
+    # 1. 資産番号重複を確認する
+    existing_equipment = crud.get_equipment_by_asset_number(db, equipment_create_request.asset_number)
+    if existing_equipment is not None:
+        raise HTTPException(status_code=400, detail="この資産番号は既に使用されています")
+
+    # 2. 備品を登録する
+    equipment = crud.create_equipment(
+        db,
+        equipment_create_request.asset_number,
+        equipment_create_request.name,
+        equipment_create_request.category,
+        equipment_create_request.description,
+        equipment_create_request.location,
+    )
+
+    # 3. 戻り値を返却
+    return equipment
+
+
+def update_equipment(db: Session, asset_number: str, equipment_update_request: EquipmentUpdateRequest) -> Equipment:
+    """
+    備品編集
+
+    設計書：サーバー処理（main）/備品管理/備品編集_v0.1.0.md
+
+    【処理概要】
+    - 対象備品の備品名・分類・説明・保管場所を更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - asset_number (str) : 資産番号 (必須)
+    - equipment_update_request (EquipmentUpdateRequest) : 備品編集リクエスト (必須)
+
+    【戻り値】
+    - equipment (Equipment) : 更新した備品情報
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 備品を更新する
+    3. 戻り値を返却
+    """
+
+    # 1. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_asset_number(db, asset_number)
+    if target_equipment is None:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+
+    # 2. 備品を更新する
+    updated_equipment = crud.update_equipment(
+        db,
+        target_equipment.id,
+        equipment_update_request.name,
+        equipment_update_request.category,
+        equipment_update_request.description,
+        equipment_update_request.location,
+    )
+
+    # 3. 戻り値を返却
+    return updated_equipment
+
+
+def disable_equipment(db: Session, asset_number: str) -> Equipment:
+    """
+    備品無効化
+
+    設計書：サーバー処理（main）/備品管理/備品無効化_v0.1.0.md
+
+    【処理概要】
+    - 対象備品に申請中・承認済み・貸出中の申請がないことを確認し、無効化する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - asset_number (str) : 資産番号 (必須)
+
+    【戻り値】
+    - equipment (Equipment) : 無効化した備品情報
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(400) : 備品が既に無効化されている場合
+    - HTTPException(400) : 申請中・承認済み・貸出中の申請が存在する場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 無効化可能なことを確認する
+    3. 備品を無効化する
+    4. 戻り値を返却
+    """
+
+    # 1. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_asset_number(db, asset_number)
+    if target_equipment is None:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+    if not target_equipment.is_active:
+        raise HTTPException(status_code=400, detail="既に無効化されています")
+
+    # 2. 無効化可能なことを確認する
+    has_active_loan_request = crud.exists_active_loan_request_by_equipment(db, target_equipment.id)
+    if has_active_loan_request:
+        raise HTTPException(status_code=400, detail="申請中・承認済み・貸出中の申請があるため無効化できません")
+
+    # 3. 備品を無効化する
+    disabled_equipment = crud.disable_equipment(db, target_equipment.id)
+
+    # 4. 戻り値を返却
+    return disabled_equipment
+
+
+def enable_equipment(db: Session, asset_number: str) -> Equipment:
+    """
+    備品再有効化
+
+    設計書：サーバー処理（main）/備品管理/備品再有効化_v0.1.0.md
+
+    【処理概要】
+    - 対象備品を再有効化する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - asset_number (str) : 資産番号 (必須)
+
+    【戻り値】
+    - equipment (Equipment) : 再有効化した備品情報
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(400) : 備品が既に有効化されている場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 備品を再有効化する
+    3. 戻り値を返却
+    """
+
+    # 1. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_asset_number(db, asset_number)
+    if target_equipment is None:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+    if target_equipment.is_active:
+        raise HTTPException(status_code=400, detail="既に有効化されています")
+
+    # 2. 備品を再有効化する
+    enabled_equipment = crud.enable_equipment(db, target_equipment.id)
+
+    # 3. 戻り値を返却
+    return enabled_equipment
+
+
+def _validate_equipment_csv_row(row_number: int, row: list[str]) -> list[EquipmentCsvRowError]:
+    """
+    備品CSV行形式検証
+
+    【概要】
+    備品CSV一括登録の1データ行について、項目の形式（文字数・パターン）を検証する
+
+    【パラメータ】
+    - row_number (int) : 行番号（ヘッダー行を1行目とする）
+    - row (list[str]) : データ行の列値（資産番号・備品名・分類・説明・保管場所の順）
+
+    【戻り値】
+    - row_errors (list[EquipmentCsvRowError]) : 行エラー一覧。該当がない場合は空リスト
+    """
+
+    asset_number, name, category, description, location = row
+
+    row_errors: list[EquipmentCsvRowError] = []
+    if _ASSET_NUMBER_PATTERN.match(asset_number) is None:
+        row_errors.append(
+            EquipmentCsvRowError(row_number, "資産番号は32文字以内の半角英数字と`-`で入力してください")
+        )
+    if not (1 <= len(name) <= 100):
+        row_errors.append(EquipmentCsvRowError(row_number, "備品名は1〜100文字で入力してください"))
+    if not (1 <= len(category) <= 50):
+        row_errors.append(EquipmentCsvRowError(row_number, "分類は1〜50文字で入力してください"))
+    if len(description) > 500:
+        row_errors.append(EquipmentCsvRowError(row_number, "説明は500文字以内で入力してください"))
+    if len(location) > 100:
+        row_errors.append(EquipmentCsvRowError(row_number, "保管場所は100文字以内で入力してください"))
+    return row_errors
+
+
+def bulk_import_equipment(db: Session, file_content: bytes) -> int:
+    """
+    備品CSV一括登録
+
+    設計書：サーバー処理（main）/備品管理/備品CSV一括登録_v0.1.0.md
+
+    【処理概要】
+    - CSVファイルのサイズ・ヘッダー列・データ行数を検証する。
+    - 全データ行について、項目の形式と資産番号の重複（ファイル内・DB内の双方）を検証する。
+    - 1行でもエラーがある場合は全件登録せず、行番号付きのエラー一覧を返す。
+    - 全行が検証OKの場合のみ、一括登録する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - file_content (bytes) : CSVファイル内容 (必須)
+
+    【戻り値】
+    - registered_count (int) : 登録件数
+
+    【例外処理】
+    - HTTPException(400) : ファイルサイズが5MBを超える場合
+    - HTTPException(400) : CSVのヘッダー列が「資産番号・備品名・分類・説明・保管場所」の順と一致しない場合
+    - HTTPException(400) : データ行数が1,000行を超える場合
+    - HTTPException(400) : 検証エラーが存在する場合（行番号・エラー内容のリストを返す）
+
+    【処理フロー】
+    1. ファイルサイズを検証する
+    2. CSVファイルを解析する
+    3. 各データ行を検証する
+    4. エラーがある場合、登録を中止する
+    5. 備品を一括登録する
+    6. 戻り値を返却
+    """
+
+    # 1. ファイルサイズを検証する
+    if len(file_content) > _EQUIPMENT_CSV_MAX_SIZE:
+        raise HTTPException(status_code=400, detail="ファイルサイズは5MB以内にしてください")
+
+    # 2. CSVファイルを解析する
+    decoded_content = file_content.decode("utf-8")
+    csv_rows = list(csv.reader(io.StringIO(decoded_content)))
+    header_row = csv_rows[0] if len(csv_rows) > 0 else []
+    if header_row != _EQUIPMENT_CSV_HEADER:
+        raise HTTPException(
+            status_code=400,
+            detail="CSVのヘッダー列が不正です（資産番号・備品名・分類・説明・保管場所の順で指定してください）",
+        )
+    data_rows = csv_rows[1:]
+    if len(data_rows) > _EQUIPMENT_CSV_MAX_ROWS:
+        raise HTTPException(status_code=400, detail="データ行数は1,000行以内にしてください")
+
+    # 3. 各データ行を検証する
+    # 3.(1) 項目の形式を検証する
+    row_errors: list[EquipmentCsvRowError] = []
+    import_rows: list[crud.EquipmentImportRow] = []
+    row_numbers_by_asset_number: dict[str, list[int]] = {}
+    for offset, data_row in enumerate(data_rows):
+        row_number = offset + 2
+        padded_row = data_row + [""] * (len(_EQUIPMENT_CSV_HEADER) - len(data_row))
+        asset_number, name, category, description, location = padded_row[:5]
+        row_errors.extend(_validate_equipment_csv_row(row_number, padded_row[:5]))
+        row_numbers_by_asset_number.setdefault(asset_number, []).append(row_number)
+        import_rows.append(
+            crud.EquipmentImportRow(
+                asset_number=asset_number,
+                name=name,
+                category=category,
+                description=description or None,
+                location=location or None,
+            )
+        )
+
+    # 3.(2) ファイル内の資産番号重複を確認する
+    for asset_number, row_numbers in row_numbers_by_asset_number.items():
+        if len(row_numbers) > 1:
+            for row_number in row_numbers:
+                row_errors.append(EquipmentCsvRowError(row_number, "資産番号がファイル内で重複しています"))
+
+    # 3.(3)〜(4) DB内の資産番号重複を確認する
+    asset_number_list = [import_row.asset_number for import_row in import_rows]
+    existing_asset_numbers = set(crud.get_existing_asset_numbers(db, asset_number_list))
+    for asset_number, row_numbers in row_numbers_by_asset_number.items():
+        if asset_number in existing_asset_numbers:
+            for row_number in row_numbers:
+                row_errors.append(EquipmentCsvRowError(row_number, "資産番号は既に登録されています"))
+
+    # 4. エラーがある場合、登録を中止する
+    if len(row_errors) > 0:
+        error_list = [
+            {"row_number": row_error.row_number, "error_message": row_error.error_message}
+            for row_error in row_errors
+        ]
+        raise HTTPException(status_code=400, detail=error_list)
+
+    # 5. 備品を一括登録する
+    registered_count = crud.bulk_create_equipments(db, import_rows)
+
+    # 6. 戻り値を返却
+    return registered_count

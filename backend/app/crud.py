@@ -2,7 +2,7 @@
 データアクセス処理（共通）
 
 【概要】
-ユーザー情報・通知情報・備品情報（参照系）に対するDBアクセス処理（データアクセス層）を定義する。他機能群のデータアクセス処理は各機能群バックログで追加する。
+ユーザー情報・通知情報・備品情報に対するDBアクセス処理（データアクセス層）を定義する。他機能群のデータアクセス処理は各機能群バックログで追加する。
 """
 
 from dataclasses import dataclass
@@ -62,6 +62,29 @@ class ReservationPeriodRow:
     due_date: date
     status: str
     applicant_name: str
+
+
+@dataclass
+class EquipmentImportRow:
+    """
+    登録対象備品情報
+
+    【概要】
+    備品一括登録（CSV一括登録）の登録対象リストの1要素を保持する
+
+    【属性】
+    - asset_number (str): 資産番号
+    - name (str): 備品名
+    - category (str): 分類
+    - description (str | None): 説明
+    - location (str | None): 保管場所
+    """
+
+    asset_number: str
+    name: str
+    category: str
+    description: str | None
+    location: str | None
 
 
 # ====================================================================================================
@@ -809,6 +832,13 @@ def exists_lending_loan_request_by_applicant(db: Session, applicant_user_id: int
 # - get_equipment_by_asset_number : 備品取得（資産番号指定）
 # - get_lending_loan_request_by_equipment : 貸出中申請取得（備品指定）
 # - get_approved_or_lending_loan_requests_by_equipment : 予約期間一覧取得（備品指定）
+# - create_equipment : 備品登録
+# - update_equipment : 備品編集
+# - disable_equipment : 備品無効化
+# - enable_equipment : 備品再有効化
+# - exists_active_loan_request_by_equipment : 有効申請存在確認（備品指定）
+# - get_existing_asset_numbers : 資産番号一覧重複確認
+# - bulk_create_equipments : 備品一括登録
 
 # 設計書：CRUD/備品管理/
 # ====================================================================================================
@@ -991,3 +1021,290 @@ def get_approved_or_lending_loan_requests_by_equipment(
 
     # 2. 戻り値を返却
     return reservation_list
+
+
+def create_equipment(
+    db: Session,
+    asset_number: str,
+    name: str,
+    category: str,
+    description: str | None,
+    location: str | None,
+) -> Equipment:
+    """
+    備品登録
+
+    設計書：CRUD/備品管理/備品登録_v0.1.0.md
+
+    【処理概要】
+    - 資産番号・備品名・分類・説明・保管場所を設定した備品レコードを新規作成し、DBに追加する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - asset_number (str) : 資産番号 (必須)
+    - name (str) : 備品名 (必須)
+    - category (str) : 分類 (必須)
+    - description (str | None) : 説明
+    - location (str | None) : 保管場所
+
+    【戻り値】
+    - equipment (Equipment) : 備品情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品登録
+    2. 戻り値を返却
+    """
+
+    # 1. 備品登録
+    now = datetime.now()
+    equipment = Equipment(
+        asset_number=asset_number,
+        name=name,
+        category=category,
+        description=description,
+        location=location,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(equipment)
+    db.commit()
+    db.refresh(equipment)
+
+    # 2. 戻り値を返却
+    return equipment
+
+
+def update_equipment(
+    db: Session,
+    equipment_internal_id: int,
+    name: str,
+    category: str,
+    description: str | None,
+    location: str | None,
+) -> Equipment:
+    """
+    備品編集
+
+    設計書：CRUD/備品管理/備品編集_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する備品情報の備品名・分類・説明・保管場所・更新日時を更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 内部ID (必須)
+    - name (str) : 備品名 (必須)
+    - category (str) : 分類 (必須)
+    - description (str | None) : 説明
+    - location (str | None) : 保管場所
+
+    【戻り値】
+    - equipment (Equipment) : 備品情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品編集
+    2. 戻り値を返却
+    """
+
+    # 1. 備品編集
+    equipment = db.query(Equipment).filter(Equipment.id == equipment_internal_id).one()
+    equipment.name = name
+    equipment.category = category
+    equipment.description = description
+    equipment.location = location
+    equipment.updated_at = datetime.now()
+    db.commit()
+    db.refresh(equipment)
+
+    # 2. 戻り値を返却
+    return equipment
+
+
+def disable_equipment(db: Session, equipment_internal_id: int) -> Equipment:
+    """
+    備品無効化
+
+    設計書：CRUD/備品管理/備品無効化_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する備品情報の有効フラグを`false`に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - equipment (Equipment) : 備品情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品無効化
+    2. 戻り値を返却
+    """
+
+    # 1. 備品無効化
+    equipment = db.query(Equipment).filter(Equipment.id == equipment_internal_id).one()
+    equipment.is_active = False
+    equipment.updated_at = datetime.now()
+    db.commit()
+    db.refresh(equipment)
+
+    # 2. 戻り値を返却
+    return equipment
+
+
+def enable_equipment(db: Session, equipment_internal_id: int) -> Equipment:
+    """
+    備品再有効化
+
+    設計書：CRUD/備品管理/備品再有効化_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する備品情報の有効フラグを`true`に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - equipment (Equipment) : 備品情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品再有効化
+    2. 戻り値を返却
+    """
+
+    # 1. 備品再有効化
+    equipment = db.query(Equipment).filter(Equipment.id == equipment_internal_id).one()
+    equipment.is_active = True
+    equipment.updated_at = datetime.now()
+    db.commit()
+    db.refresh(equipment)
+
+    # 2. 戻り値を返却
+    return equipment
+
+
+def exists_active_loan_request_by_equipment(db: Session, equipment_internal_id: int) -> bool:
+    """
+    有効申請存在確認（備品指定）
+
+    設計書：CRUD/備品管理/有効申請存在確認（備品指定）_v0.1.0.md
+
+    【処理概要】
+    - 指定した備品に、状態が「申請中」「承認済み」「貸出中」のいずれかである申請があるかどうかを確認する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 備品内部ID (必須)
+
+    【戻り値】
+    - exists (bool) : 有効申請が1件以上存在する場合True、存在しない場合False
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 有効申請存在確認
+    2. 戻り値を返却
+    """
+
+    # 1. 有効申請存在確認
+    active_loan_request_count = (
+        db.query(func.count(LoanRequest.id))
+        .filter(
+            LoanRequest.equipment_id == equipment_internal_id,
+            LoanRequest.status.in_(["pending", "approved", "lending"]),
+        )
+        .scalar()
+    )
+
+    # 2. 戻り値を返却
+    return active_loan_request_count >= 1
+
+
+def get_existing_asset_numbers(db: Session, asset_number_list: list[str]) -> list[str]:
+    """
+    資産番号一覧重複確認
+
+    設計書：CRUD/備品管理/資産番号一覧重複確認_v0.1.0.md
+
+    【処理概要】
+    - 入力値の資産番号リストに含まれる資産番号のうち、EQUIPMENTテーブルに既に存在するものを取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - asset_number_list (list[str]) : 資産番号リスト (必須)
+
+    【戻り値】
+    - existing_asset_number_list (list[str]) : 登録済み資産番号リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 資産番号一覧重複確認
+    2. 戻り値を返却
+    """
+
+    # 1. 資産番号一覧重複確認
+    # 2. 戻り値を返却
+    rows = db.query(Equipment.asset_number).filter(Equipment.asset_number.in_(asset_number_list)).all()
+    return [asset_number for (asset_number,) in rows]
+
+
+def bulk_create_equipments(db: Session, equipment_list: list[EquipmentImportRow]) -> int:
+    """
+    備品一括登録
+
+    設計書：CRUD/備品管理/備品一括登録_v0.1.0.md
+
+    【処理概要】
+    - 入力値の登録対象リストの各要素について、資産番号・備品名・分類・説明・保管場所を設定した備品レコードを新規作成し、DBに追加する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_list (list[EquipmentImportRow]) : 登録対象リスト (必須)
+
+    【戻り値】
+    - registered_count (int) : 登録件数
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品一括登録
+    2. 戻り値を返却
+    """
+
+    # 1. 備品一括登録
+    now = datetime.now()
+    for equipment_row in equipment_list:
+        db.add(
+            Equipment(
+                asset_number=equipment_row.asset_number,
+                name=equipment_row.name,
+                category=equipment_row.category,
+                description=equipment_row.description,
+                location=equipment_row.location,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    db.commit()
+
+    # 2. 戻り値を返却
+    return len(equipment_list)

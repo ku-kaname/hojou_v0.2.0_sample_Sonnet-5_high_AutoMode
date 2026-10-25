@@ -2,7 +2,7 @@
 エンドポイント（共通）
 
 【概要】
-ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系）の各エンドポイント、およびアプリケーション起動時処理
+ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系・登録管理系）の各エンドポイント、およびアプリケーション起動時処理
 （初期管理者アカウント自動作成・日次バッチ起動定義）を定義する。他機能群のエンドポイントは各機能群バックログで追加する。
 """
 
@@ -10,7 +10,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Path, Query
+from fastapi import Depends, FastAPI, File, Path, Query, UploadFile
 from pwdlib import PasswordHash
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -18,7 +18,11 @@ from sqlalchemy.orm import Session
 from app import auth, crud, scheduler, services
 from app.database import SessionLocal, get_db
 from app.schemas import (
+    EquipmentBulkImportResponse,
+    EquipmentCreateRequest,
     EquipmentListItemResponse,
+    EquipmentResponse,
+    EquipmentUpdateRequest,
     NotificationResponse,
     PasswordResetRequest,
     ReservationPeriodResponse,
@@ -540,6 +544,11 @@ def reset_user_password_endpoint(
 # - search_equipment_endpoint : 備品検索・一覧取得
 # - get_equipment_endpoint : 備品詳細取得
 # - get_equipment_reservations_endpoint : 備品予約状況取得
+# - create_equipment_endpoint : 備品登録
+# - update_equipment_endpoint : 備品編集
+# - disable_equipment_endpoint : 備品無効化
+# - enable_equipment_endpoint : 備品再有効化
+# - bulk_import_equipment_endpoint : 備品CSV一括登録
 
 # 設計書：サーバー処理（main）/備品管理/
 # オーケストレーション層（services.py）を経由し、データアクセス層（crud.py）を直接呼び出さない。
@@ -665,3 +674,222 @@ def get_equipment_reservations_endpoint(
     return [
         ReservationPeriodResponse.model_validate(reservation, from_attributes=True) for reservation in reservation_list
     ]
+
+
+@app.post("/equipment")
+def create_equipment_endpoint(
+    equipment_create_request: EquipmentCreateRequest,
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> EquipmentResponse:
+    """
+    備品登録
+
+    設計書：サーバー処理（main）/備品管理/備品登録_v0.1.0.md
+
+    【処理概要】
+    - 管理者が新規備品を登録する。
+    - 資産番号の重複を確認したうえで、備品を新規登録する。
+
+    【パラメータ】
+    - equipment_create_request (EquipmentCreateRequest) : 備品作成リクエスト (必須)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - equipment_response (EquipmentResponse) : 備品応答
+
+    【例外処理】
+    - HTTPException(400) : 資産番号が既に使用されている場合
+
+    【処理フロー】
+    1. 資産番号重複を確認する
+    2. 備品を登録する
+    3. 戻り値を返却
+    """
+
+    # 1〜2. 資産番号重複確認・備品登録
+    equipment = services.create_equipment(db, equipment_create_request)
+
+    # 3. 戻り値を返却
+    return EquipmentResponse.model_validate(equipment, from_attributes=True)
+
+
+@app.put("/equipment/{equipment_id}")
+def update_equipment_endpoint(
+    equipment_update_request: EquipmentUpdateRequest,
+    equipment_id: str = Path(min_length=1, max_length=32),
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> EquipmentResponse:
+    """
+    備品編集
+
+    設計書：サーバー処理（main）/備品管理/備品編集_v0.1.0.md
+
+    【処理概要】
+    - 管理者が対象備品の備品名・分類・説明・保管場所を編集する。
+
+    【パラメータ】
+    - equipment_update_request (EquipmentUpdateRequest) : 備品編集リクエスト (必須)
+    - equipment_id (str) : 資産番号 (必須。URLパスの変数名は`equipment_id`とするが、値は資産番号を指定する)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - equipment_response (EquipmentResponse) : 備品応答
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 備品を更新する
+    3. 戻り値を返却
+    """
+
+    # 1〜2. 対象備品取得・備品更新
+    equipment = services.update_equipment(db, equipment_id, equipment_update_request)
+
+    # 3. 戻り値を返却
+    return EquipmentResponse.model_validate(equipment, from_attributes=True)
+
+
+@app.put("/equipment/{equipment_id}/disable")
+def disable_equipment_endpoint(
+    equipment_id: str = Path(min_length=1, max_length=32),
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> EquipmentResponse:
+    """
+    備品無効化
+
+    設計書：サーバー処理（main）/備品管理/備品無効化_v0.1.0.md
+
+    【処理概要】
+    - 指定した備品を無効化する。
+    - その備品に「申請中」「承認済み」「貸出中」の申請がないことを確認したうえで無効化する。該当する申請がある場合は無効化できない（ユーザー無効化と異なり、自動取消は行わない）。
+
+    【パラメータ】
+    - equipment_id (str) : 資産番号 (必須。URLパスの変数名は`equipment_id`とするが、値は資産番号を指定する)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - equipment_response (EquipmentResponse) : 備品応答
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(400) : 備品が既に無効化されている場合
+    - HTTPException(400) : 申請中・承認済み・貸出中の申請が存在する場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 無効化可能なことを確認する
+    3. 備品を無効化する
+    4. 戻り値を返却
+    """
+
+    # 1〜3. 対象備品取得・無効化可否確認・備品無効化
+    equipment = services.disable_equipment(db, equipment_id)
+
+    # 4. 戻り値を返却
+    return EquipmentResponse.model_validate(equipment, from_attributes=True)
+
+
+@app.put("/equipment/{equipment_id}/enable")
+def enable_equipment_endpoint(
+    equipment_id: str = Path(min_length=1, max_length=32),
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> EquipmentResponse:
+    """
+    備品再有効化
+
+    設計書：サーバー処理（main）/備品管理/備品再有効化_v0.1.0.md
+
+    【処理概要】
+    - 指定した備品を再有効化する。
+
+    【パラメータ】
+    - equipment_id (str) : 資産番号 (必須。URLパスの変数名は`equipment_id`とするが、値は資産番号を指定する)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - equipment_response (EquipmentResponse) : 備品応答
+
+    【例外処理】
+    - HTTPException(404) : 備品が取得できない場合
+    - HTTPException(400) : 備品が既に有効化されている場合
+
+    【処理フロー】
+    1. 対象備品を取得する
+    2. 備品を再有効化する
+    3. 戻り値を返却
+    """
+
+    # 1〜2. 対象備品取得・備品再有効化
+    equipment = services.enable_equipment(db, equipment_id)
+
+    # 3. 戻り値を返却
+    return EquipmentResponse.model_validate(equipment, from_attributes=True)
+
+
+@app.post("/equipment/bulk-import")
+def bulk_import_equipment_endpoint(
+    file: UploadFile = File(),
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> EquipmentBulkImportResponse:
+    """
+    備品CSV一括登録
+
+    設計書：サーバー処理（main）/備品管理/備品CSV一括登録_v0.1.0.md
+
+    【処理概要】
+    - CSVファイルから備品を一括登録する。
+    - CSVファイルのサイズ・ヘッダー列・データ行数を検証する。
+    - 全データ行について、項目の形式と資産番号の重複（ファイル内・DB内の双方）を検証する。
+    - 1行でもエラーがある場合は全件登録せず、行番号付きのエラー一覧を返す。
+    - 全行が検証OKの場合のみ、一括登録する。
+
+    【パラメータ】
+    - file (UploadFile) : CSVファイル (必須。multipart/form-data。ヘッダー行あり、列は「資産番号・備品名・分類・説明・保管場所」の順)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - bulk_import_response (EquipmentBulkImportResponse) : 備品CSV一括登録応答
+
+    【例外処理】
+    - HTTPException(400) : ファイルサイズが5MBを超える場合
+    - HTTPException(400) : CSVのヘッダー列が不正な場合
+    - HTTPException(400) : データ行数が1,000行を超える場合
+    - HTTPException(400) : 検証エラーが存在する場合（行番号・エラー内容のリストを返す）
+
+    【処理フロー】
+    1. ファイルサイズを検証する
+    2. CSVファイルを解析する
+    3. 各データ行を検証する
+    4. エラーがある場合、登録を中止する
+    5. 備品を一括登録する
+    6. 戻り値を返却
+    """
+
+    # 1〜5. ファイルサイズ検証・CSV解析・各データ行検証・登録中止判定・備品一括登録
+    file_content = file.file.read()
+    registered_count = services.bulk_import_equipment(db, file_content)
+
+    # 6. 戻り値を返却
+    return EquipmentBulkImportResponse(registered_count=registered_count)
