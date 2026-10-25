@@ -51,7 +51,7 @@ interface ParsedErrorDetail {
   rowErrors?: ApiRowError[];
 }
 
-function isApiRowErrorList(data: unknown): data is ApiRowError[] {
+export function isApiRowErrorList(data: unknown): data is ApiRowError[] {
   return (
     Array.isArray(data) &&
     data.every(
