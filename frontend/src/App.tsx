@@ -16,6 +16,8 @@ import { UserManagementPage } from "./pages/UserManagementPage";
 import { EquipmentListPage } from "./pages/EquipmentListPage";
 import { EquipmentDetailPage } from "./pages/EquipmentDetailPage";
 import { EquipmentManagementPage } from "./pages/EquipmentManagementPage";
+import { MyRequestsPage } from "./pages/MyRequestsPage";
+import { RequestManagementPage } from "./pages/RequestManagementPage";
 
 export function App() {
   return (
@@ -28,9 +30,11 @@ export function App() {
             <Route path="/password-change" element={<PasswordChangePage />} />
             <Route path="/equipment" element={<EquipmentListPage />} />
             <Route path="/equipment/:assetNumber" element={<EquipmentDetailPage />} />
+            <Route path="/my-requests" element={<MyRequestsPage />} />
             <Route element={<AdminRoute />}>
               <Route path="/users" element={<UserManagementPage />} />
               <Route path="/equipment-management" element={<EquipmentManagementPage />} />
+              <Route path="/request-management" element={<RequestManagementPage />} />
             </Route>
           </Route>
         </Route>

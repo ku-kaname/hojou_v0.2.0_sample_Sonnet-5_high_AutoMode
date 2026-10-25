@@ -1,7 +1,7 @@
 // API入出力DTO型定義
 //
 // 【概要】
-// backend/app/schemas.pyの認証・認可・通知・ユーザー管理・備品管理区分のPydanticスキーマに対応するTypeScript型を定義する。
+// backend/app/schemas.pyの認証・認可・通知・ユーザー管理・備品管理・貸出申請・承認区分のPydanticスキーマに対応するTypeScript型を定義する。
 // 他機能群のスキーマは各機能群バックログで追加する。
 
 export interface LoginRequest {
@@ -116,4 +116,47 @@ export interface EquipmentResponse {
 
 export interface EquipmentBulkImportResponse {
   registered_count: number;
+}
+
+export type LoanRequestStatus = "pending" | "approved" | "lending" | "returned" | "rejected" | "cancelled";
+
+export interface LoanRequestCreateRequest {
+  asset_number: string;
+  start_date: string;
+  due_date: string;
+  purpose: string;
+}
+
+export interface LoanRequestRejectRequest {
+  rejection_reason: string;
+}
+
+export interface LoanRequestAdminCancelRequest {
+  cancellation_reason: string;
+}
+
+export interface LoanRequestResponse {
+  id: number;
+  asset_number: string;
+  equipment_name: string;
+  applicant_name: string;
+  start_date: string;
+  due_date: string;
+  purpose: string;
+  status: LoanRequestStatus;
+  rejection_reason: string | null;
+  requested_at: string;
+  decided_at: string | null;
+  cancelled_at: string | null;
+}
+
+export interface PendingLoanRequestListItemResponse {
+  id: number;
+  asset_number: string;
+  equipment_name: string;
+  applicant_name: string;
+  start_date: string;
+  due_date: string;
+  purpose: string;
+  requested_at: string;
 }

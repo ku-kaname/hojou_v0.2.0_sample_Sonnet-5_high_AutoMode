@@ -268,3 +268,86 @@ class EquipmentBulkImportResponse(BaseModel):
     """
 
     registered_count: int
+
+
+# ====================================================================================================
+# 貸出申請・承認スキーマ
+# - LoanRequestCreateRequest : 貸出申請リクエスト
+# - LoanRequestRejectRequest : 申請却下リクエスト
+# - LoanRequestAdminCancelRequest : 管理者申請取消リクエスト
+# - LoanRequestResponse : 貸出申請応答
+# - PendingLoanRequestListItemResponse : 承認待ち申請一覧要素応答
+
+# 設計書：スキーマ（schemas）/貸出申請操作_v0.1.0.md
+# ====================================================================================================
+
+
+class LoanRequestCreateRequest(BaseModel):
+    """
+    貸出申請リクエスト
+
+    設計書：スキーマ（schemas）/貸出申請操作_v0.1.0.md
+    """
+
+    asset_number: str = Field(min_length=1, max_length=32)
+    start_date: date
+    due_date: date
+    purpose: str = Field(min_length=1, max_length=200)
+
+
+class LoanRequestRejectRequest(BaseModel):
+    """
+    申請却下リクエスト
+
+    設計書：スキーマ（schemas）/貸出申請操作_v0.1.0.md
+    """
+
+    rejection_reason: str = Field(min_length=1, max_length=200)
+
+
+class LoanRequestAdminCancelRequest(BaseModel):
+    """
+    管理者申請取消リクエスト
+
+    設計書：スキーマ（schemas）/貸出申請操作_v0.1.0.md
+    """
+
+    cancellation_reason: str = Field(min_length=1, max_length=200)
+
+
+class LoanRequestResponse(BaseModel):
+    """
+    貸出申請応答
+
+    設計書：スキーマ（schemas）/貸出申請操作_v0.1.0.md
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    rejection_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    cancelled_at: datetime | None
+
+
+class PendingLoanRequestListItemResponse(BaseModel):
+    """
+    承認待ち申請一覧要素応答
+
+    設計書：スキーマ（schemas）/貸出申請操作_v0.1.0.md
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    requested_at: datetime
