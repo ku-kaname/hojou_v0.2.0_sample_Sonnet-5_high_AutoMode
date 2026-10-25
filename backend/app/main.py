@@ -2,8 +2,8 @@
 エンドポイント（共通）
 
 【概要】
-ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系・登録管理系）の各エンドポイント、およびアプリケーション起動時処理
-（初期管理者アカウント自動作成・日次バッチ起動定義）を定義する。他機能群のエンドポイントは各機能群バックログで追加する。
+ヘルスチェック・認証・認可（auth）・通知・ユーザー管理・備品管理（参照系・登録管理系）・貸出申請・承認の各エンドポイント、
+およびアプリケーション起動時処理（初期管理者アカウント自動作成・日次バッチ起動定義）を定義する。他機能群のエンドポイントは各機能群バックログで追加する。
 """
 
 import os
@@ -23,8 +23,13 @@ from app.schemas import (
     EquipmentListItemResponse,
     EquipmentResponse,
     EquipmentUpdateRequest,
+    LoanRequestAdminCancelRequest,
+    LoanRequestCreateRequest,
+    LoanRequestRejectRequest,
+    LoanRequestResponse,
     NotificationResponse,
     PasswordResetRequest,
+    PendingLoanRequestListItemResponse,
     ReservationPeriodResponse,
     UserCreateRequest,
     UserManagementResponse,
@@ -893,3 +898,276 @@ def bulk_import_equipment_endpoint(
 
     # 6. 戻り値を返却
     return EquipmentBulkImportResponse(registered_count=registered_count)
+
+
+@app.post("/loan-requests")
+def create_loan_request_endpoint(
+    loan_request_create_request: LoanRequestCreateRequest,
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanRequestResponse:
+    """
+    貸出申請
+
+    設計書：サーバー処理（main）/貸出申請・承認/貸出申請_v0.1.0.md
+
+    【処理概要】
+    - 入力値の資産番号に一致する有効な備品を取得する。
+    - 指定した期間について、同一備品の承認済み・貸出中の申請と重複がないことを確認する。
+    - 貸出申請を新規登録し、有効な管理者全員に通知を送信する。
+
+    【パラメータ】
+    - loan_request_create_request (LoanRequestCreateRequest) : 貸出申請リクエスト (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_request_response (LoanRequestResponse) : 貸出申請応答
+
+    【例外処理】
+    - HTTPException(400) : 返却予定日が開始日より前の場合
+    - HTTPException(404) : 備品が取得できない、または無効化済みの場合
+    - HTTPException(400) : 指定期間が既存の承認済み・貸出中の申請と重複する場合
+
+    【処理フロー】
+    1. リクエストの日付整合性を確認する
+    2. 対象備品を取得する
+    3. 期間の重複を確認する
+    4. 貸出申請を登録する
+    5. 有効な管理者全員に通知する
+    6. 戻り値を返却
+    """
+
+    # 1〜5. 日付整合性確認・対象備品取得・期間重複確認・貸出申請登録・管理者通知
+    loan_request_detail = services.create_loan_request(db, loan_request_create_request, current_user.id, current_user.name)
+
+    # 6. 戻り値を返却
+    return LoanRequestResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+@app.put("/loan-requests/{loan_request_id}/cancel")
+def cancel_loan_request_endpoint(
+    loan_request_id: int,
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanRequestResponse:
+    """
+    申請取消
+
+    設計書：サーバー処理（main）/貸出申請・承認/申請取消_v0.1.0.md
+
+    【処理概要】
+    - 申請者本人が、自身の貸出申請を取消する。
+    - 対象の貸出申請を取得し、申請者が自分自身であること、状態が「申請中」または「承認済み」であることを確認する。
+    - 申請を取消状態に更新する。
+
+    【パラメータ】
+    - loan_request_id (int) : 内部ID (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_request_response (LoanRequestResponse) : 貸出申請応答
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(404) : 自分以外の申請を取消しようとしている場合（存在有無を判別できないよう、取得できない場合と同様に扱う）
+    - HTTPException(400) : 取消可能な状態ではない場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 貸出申請を取消する
+    3. 貸出申請の詳細を取得する
+    4. 戻り値を返却
+    """
+
+    # 1〜3. 対象の貸出申請取得・貸出申請取消・貸出申請詳細取得
+    loan_request_detail = services.cancel_loan_request(db, loan_request_id, current_user.id)
+
+    # 4. 戻り値を返却
+    return LoanRequestResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+@app.get("/loan-requests/pending")
+def get_pending_loan_requests_endpoint(
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> list[PendingLoanRequestListItemResponse]:
+    """
+    承認待ち申請一覧取得
+
+    設計書：サーバー処理（main）/貸出申請・承認/承認待ち申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 状態が「申請中」の貸出申請を、申請日時の昇順で一覧取得する。
+
+    【パラメータ】
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - pending_loan_request_response_list (list[PendingLoanRequestListItemResponse]) : 承認待ち申請一覧要素応答リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 承認待ち申請一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1. 承認待ち申請一覧を取得する
+    pending_loan_request_list = services.get_pending_loan_requests(db)
+
+    # 2. 戻り値を返却
+    return [
+        PendingLoanRequestListItemResponse.model_validate(pending_loan_request, from_attributes=True)
+        for pending_loan_request in pending_loan_request_list
+    ]
+
+
+@app.put("/loan-requests/{loan_request_id}/approve")
+def approve_loan_request_endpoint(
+    loan_request_id: int,
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanRequestResponse:
+    """
+    申請承認
+
+    設計書：サーバー処理（main）/貸出申請・承認/申請承認_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、申請中の貸出申請を承認する。
+    - 対象の貸出申請を取得し、状態が「申請中」であること、開始日が今日以降であることを確認する。
+    - 指定期間について、同一備品の承認済み・貸出中の申請と重複がないことを確認する。
+    - 申請を承認済み状態に更新し、申請者へ通知を送信する。
+
+    【パラメータ】
+    - loan_request_id (int) : 内部ID (必須)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_request_response (LoanRequestResponse) : 貸出申請応答
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 承認可能な状態ではない場合
+    - HTTPException(400) : 開始日を過ぎている場合
+    - HTTPException(400) : 指定期間が既存の承認済み・貸出中の申請と重複する場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 期間の重複を確認する
+    3. 貸出申請を承認する
+    4. 貸出申請の詳細を取得する
+    5. 申請者へ通知する
+    6. 戻り値を返却
+    """
+
+    # 1〜5. 対象の貸出申請取得・期間重複確認・貸出申請承認・貸出申請詳細取得・申請者通知
+    loan_request_detail = services.approve_loan_request(db, loan_request_id, current_user.id)
+
+    # 6. 戻り値を返却
+    return LoanRequestResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+@app.put("/loan-requests/{loan_request_id}/reject")
+def reject_loan_request_endpoint(
+    loan_request_reject_request: LoanRequestRejectRequest,
+    loan_request_id: int,
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanRequestResponse:
+    """
+    申請却下
+
+    設計書：サーバー処理（main）/貸出申請・承認/申請却下_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、申請中の貸出申請を却下する。
+    - 対象の貸出申請を取得し、状態が「申請中」であることを確認する。
+    - 申請を却下状態に更新し、申請者へ通知を送信する。
+
+    【パラメータ】
+    - loan_request_reject_request (LoanRequestRejectRequest) : 申請却下リクエスト (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_request_response (LoanRequestResponse) : 貸出申請応答
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 却下可能な状態ではない場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 貸出申請を却下する
+    3. 貸出申請の詳細を取得する
+    4. 申請者へ通知する
+    5. 戻り値を返却
+    """
+
+    # 1〜4. 対象の貸出申請取得・貸出申請却下・貸出申請詳細取得・申請者通知
+    loan_request_detail = services.reject_loan_request(db, loan_request_id, current_user.id, loan_request_reject_request)
+
+    # 5. 戻り値を返却
+    return LoanRequestResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+@app.put("/loan-requests/{loan_request_id}/admin-cancel")
+def admin_cancel_loan_request_endpoint(
+    loan_request_admin_cancel_request: LoanRequestAdminCancelRequest,
+    loan_request_id: int,
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> LoanRequestResponse:
+    """
+    管理者申請取消
+
+    設計書：サーバー処理（main）/貸出申請・承認/管理者申請取消_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、承認済みの貸出申請を取消する。
+    - 対象の貸出申請を取得し、状態が「承認済み」であることを確認する。
+    - 申請を取消状態に更新し、申請者へ通知を送信する。
+
+    【パラメータ】
+    - loan_request_admin_cancel_request (LoanRequestAdminCancelRequest) : 管理者申請取消リクエスト (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_request_response (LoanRequestResponse) : 貸出申請応答
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 取消可能な状態ではない場合（「申請中」の申請は却下（F09）で取消する対象のため、本機能の対象は「承認済み」のみ）
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 貸出申請を取消する
+    3. 貸出申請の詳細を取得する
+    4. 申請者へ通知する
+    5. 戻り値を返却
+    """
+
+    # 1〜4. 対象の貸出申請取得・貸出申請取消・貸出申請詳細取得・申請者通知
+    loan_request_detail = services.admin_cancel_loan_request(
+        db, loan_request_id, current_user.id, loan_request_admin_cancel_request
+    )
+
+    # 5. 戻り値を返却
+    return LoanRequestResponse.model_validate(loan_request_detail, from_attributes=True)

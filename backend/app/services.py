@@ -3,7 +3,8 @@
 
 【概要】
 通知一覧取得・通知既読化、ユーザー管理（登録・一覧取得・詳細取得・編集・無効化・再有効化・パスワード初期化）、
-備品管理（検索・一覧取得、詳細取得、予約状況取得、登録、編集、無効化、再有効化、CSV一括登録）のオーケストレーション処理を定義する。
+備品管理（検索・一覧取得、詳細取得、予約状況取得、登録、編集、無効化、再有効化、CSV一括登録）、
+貸出申請・承認（貸出申請、申請取消、承認待ち申請一覧取得、申請承認、申請却下、管理者申請取消）のオーケストレーション処理を定義する。
 貸出・返却機能群の日次バッチ本体（ノーショー自動取消・期限通知生成）は、貸出・返却機能群バックログで本ファイルに追加する。
 """
 
@@ -22,6 +23,9 @@ from app.models import Equipment, Notification, User
 from app.schemas import (
     EquipmentCreateRequest,
     EquipmentUpdateRequest,
+    LoanRequestAdminCancelRequest,
+    LoanRequestCreateRequest,
+    LoanRequestRejectRequest,
     PasswordResetRequest,
     UserCreateRequest,
     UserUpdateRequest,
@@ -971,3 +975,370 @@ def bulk_import_equipment(db: Session, file_content: bytes) -> int:
 
     # 6. 戻り値を返却
     return registered_count
+
+
+# ====================================================================================================
+# 貸出申請・承認操作
+# - create_loan_request : 貸出申請
+# - cancel_loan_request : 申請取消
+# - get_pending_loan_requests : 承認待ち申請一覧取得
+# - approve_loan_request : 申請承認
+# - reject_loan_request : 申請却下
+# - admin_cancel_loan_request : 管理者申請取消
+
+# 設計書：サーバー処理（main）/貸出申請・承認/
+# ====================================================================================================
+
+
+def create_loan_request(
+    db: Session,
+    loan_request_create_request: LoanRequestCreateRequest,
+    applicant_user_id: int,
+    applicant_name: str,
+) -> crud.LoanRequestDetailRow:
+    """
+    貸出申請
+
+    設計書：サーバー処理（main）/貸出申請・承認/貸出申請_v0.1.0.md
+
+    【処理概要】
+    - 入力値の資産番号に一致する有効な備品を取得する。
+    - 指定した期間について、同一備品の承認済み・貸出中の申請と重複がないことを確認する。
+    - 貸出申請を新規登録し、有効な管理者全員に通知を送信する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_create_request (LoanRequestCreateRequest) : 貸出申請リクエスト (必須)
+    - applicant_user_id (int) : 申請者ユーザー内部ID (必須)
+    - applicant_name (str) : 申請者氏名 (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(400) : 返却予定日が開始日より前の場合
+    - HTTPException(404) : 備品が取得できない、または無効化済みの場合
+    - HTTPException(400) : 指定期間が既存の承認済み・貸出中の申請と重複する場合
+
+    【処理フロー】
+    1. リクエストの日付整合性を確認する
+    2. 対象備品を取得する
+    3. 期間の重複を確認する
+    4. 貸出申請を登録する
+    5. 有効な管理者全員に通知する
+    6. 戻り値を返却
+    """
+
+    # 1. リクエストの日付整合性を確認する
+    if loan_request_create_request.due_date < loan_request_create_request.start_date:
+        raise HTTPException(status_code=400, detail="返却予定日は開始日以降の日付を指定してください")
+
+    # 2. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_asset_number(db, loan_request_create_request.asset_number)
+    if target_equipment is None or not target_equipment.is_active:
+        raise HTTPException(status_code=404, detail="備品が見つかりません")
+
+    # 3. 期間の重複を確認する
+    has_overlapping_loan_request = crud.exists_overlapping_loan_request_by_equipment(
+        db,
+        target_equipment.id,
+        loan_request_create_request.start_date,
+        loan_request_create_request.due_date,
+    )
+    if has_overlapping_loan_request:
+        raise HTTPException(status_code=400, detail="指定した期間は既に貸出予定があります")
+
+    # 4. 貸出申請を登録する
+    loan_request = crud.create_loan_request(
+        db,
+        target_equipment.id,
+        applicant_user_id,
+        loan_request_create_request.start_date,
+        loan_request_create_request.due_date,
+        loan_request_create_request.purpose,
+    )
+
+    # 5. 有効な管理者全員に通知する
+    active_admin_users = crud.get_active_admin_users(db)
+    for active_admin_user in active_admin_users:
+        crud.create_notification(db, active_admin_user.id, "new_request", loan_request.id)
+
+    # 6. 戻り値を返却
+    return crud.LoanRequestDetailRow(
+        id=loan_request.id,
+        asset_number=target_equipment.asset_number,
+        equipment_name=target_equipment.name,
+        applicant_name=applicant_name,
+        start_date=loan_request.start_date,
+        due_date=loan_request.due_date,
+        purpose=loan_request.purpose,
+        status=loan_request.status,
+        rejection_reason=loan_request.rejection_reason,
+        requested_at=loan_request.requested_at,
+        decided_at=loan_request.decided_at,
+        cancelled_at=loan_request.cancelled_at,
+    )
+
+
+def cancel_loan_request(db: Session, loan_request_id: int, current_user_id: int) -> crud.LoanRequestDetailRow:
+    """
+    申請取消
+
+    設計書：サーバー処理（main）/貸出申請・承認/申請取消_v0.1.0.md
+
+    【処理概要】
+    - 申請者本人が、自身の貸出申請を取消する。
+    - 対象の貸出申請を取得し、申請者が自分自身であること、状態が「申請中」または「承認済み」であることを確認する。
+    - 申請を取消状態に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - current_user_id (int) : ログインユーザー内部ID (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(404) : 自分以外の申請を取消しようとしている場合（存在有無を判別できないよう、取得できない場合と同様に扱う）
+    - HTTPException(400) : 取消可能な状態ではない場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 貸出申請を取消する
+    3. 貸出申請の詳細を取得する
+    4. 戻り値を返却
+    """
+
+    # 1. 対象の貸出申請を取得する
+    target_loan_request = crud.get_loan_request_by_id(db, loan_request_id)
+    if target_loan_request is None:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.applicant_user_id != current_user_id:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.status not in ("pending", "approved"):
+        raise HTTPException(status_code=400, detail="この申請は取消できません")
+
+    # 2. 貸出申請を取消する
+    crud.cancel_loan_request(db, loan_request_id, current_user_id, None)
+
+    # 3. 貸出申請の詳細を取得する
+    loan_request_detail = crud.get_loan_request_detail_by_id(db, loan_request_id)
+    assert loan_request_detail is not None
+
+    # 4. 戻り値を返却
+    return loan_request_detail
+
+
+def get_pending_loan_requests(db: Session) -> list[crud.PendingLoanRequestRow]:
+    """
+    承認待ち申請一覧取得
+
+    設計書：サーバー処理（main）/貸出申請・承認/承認待ち申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 状態が「申請中」の貸出申請を、申請日時の昇順で一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - pending_loan_request_list (list[PendingLoanRequestRow]) : 承認待ち申請一覧行リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 承認待ち申請一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1〜2. 承認待ち申請一覧取得・戻り値を返却
+    return crud.get_pending_loan_requests(db)
+
+
+def approve_loan_request(db: Session, loan_request_id: int, approved_by_user_id: int) -> crud.LoanRequestDetailRow:
+    """
+    申請承認
+
+    設計書：サーバー処理（main）/貸出申請・承認/申請承認_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、申請中の貸出申請を承認する。
+    - 対象の貸出申請を取得し、状態が「申請中」であること、開始日が今日以降であることを確認する。
+    - 指定期間について、同一備品の承認済み・貸出中の申請と重複がないことを確認する。
+    - 申請を承認済み状態に更新し、申請者へ通知を送信する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - approved_by_user_id (int) : 承認した管理者ユーザー内部ID (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 承認可能な状態ではない場合
+    - HTTPException(400) : 開始日を過ぎている場合
+    - HTTPException(400) : 指定期間が既存の承認済み・貸出中の申請と重複する場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 期間の重複を確認する
+    3. 貸出申請を承認する
+    4. 貸出申請の詳細を取得する
+    5. 申請者へ通知する
+    6. 戻り値を返却
+    """
+
+    # 1. 対象の貸出申請を取得する
+    target_loan_request = crud.get_loan_request_by_id(db, loan_request_id)
+    if target_loan_request is None:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.status != "pending":
+        raise HTTPException(status_code=400, detail="この申請は承認できません")
+    if target_loan_request.start_date < date.today():
+        raise HTTPException(status_code=400, detail="開始日を過ぎた申請は承認できません")
+
+    # 2. 期間の重複を確認する
+    has_overlapping_loan_request = crud.exists_overlapping_loan_request_by_equipment(
+        db,
+        target_loan_request.equipment_id,
+        target_loan_request.start_date,
+        target_loan_request.due_date,
+    )
+    if has_overlapping_loan_request:
+        raise HTTPException(status_code=400, detail="指定した期間は既に貸出予定があります")
+
+    # 3. 貸出申請を承認する
+    crud.approve_loan_request(db, loan_request_id, approved_by_user_id)
+
+    # 4. 貸出申請の詳細を取得する
+    loan_request_detail = crud.get_loan_request_detail_by_id(db, loan_request_id)
+    assert loan_request_detail is not None
+
+    # 5. 申請者へ通知する
+    crud.create_notification(db, target_loan_request.applicant_user_id, "approved", loan_request_id)
+
+    # 6. 戻り値を返却
+    return loan_request_detail
+
+
+def reject_loan_request(
+    db: Session,
+    loan_request_id: int,
+    rejected_by_user_id: int,
+    loan_request_reject_request: LoanRequestRejectRequest,
+) -> crud.LoanRequestDetailRow:
+    """
+    申請却下
+
+    設計書：サーバー処理（main）/貸出申請・承認/申請却下_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、申請中の貸出申請を却下する。
+    - 対象の貸出申請を取得し、状態が「申請中」であることを確認する。
+    - 申請を却下状態に更新し、申請者へ通知を送信する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - rejected_by_user_id (int) : 却下した管理者ユーザー内部ID (必須)
+    - loan_request_reject_request (LoanRequestRejectRequest) : 申請却下リクエスト (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 却下可能な状態ではない場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 貸出申請を却下する
+    3. 貸出申請の詳細を取得する
+    4. 申請者へ通知する
+    5. 戻り値を返却
+    """
+
+    # 1. 対象の貸出申請を取得する
+    target_loan_request = crud.get_loan_request_by_id(db, loan_request_id)
+    if target_loan_request is None:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.status != "pending":
+        raise HTTPException(status_code=400, detail="この申請は却下できません")
+
+    # 2. 貸出申請を却下する
+    crud.reject_loan_request(db, loan_request_id, rejected_by_user_id, loan_request_reject_request.rejection_reason)
+
+    # 3. 貸出申請の詳細を取得する
+    loan_request_detail = crud.get_loan_request_detail_by_id(db, loan_request_id)
+    assert loan_request_detail is not None
+
+    # 4. 申請者へ通知する
+    crud.create_notification(db, target_loan_request.applicant_user_id, "rejected", loan_request_id)
+
+    # 5. 戻り値を返却
+    return loan_request_detail
+
+
+def admin_cancel_loan_request(
+    db: Session,
+    loan_request_id: int,
+    cancelled_by_user_id: int,
+    loan_request_admin_cancel_request: LoanRequestAdminCancelRequest,
+) -> crud.LoanRequestDetailRow:
+    """
+    管理者申請取消
+
+    設計書：サーバー処理（main）/貸出申請・承認/管理者申請取消_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、承認済みの貸出申請を取消する。
+    - 対象の貸出申請を取得し、状態が「承認済み」であることを確認する。
+    - 申請を取消状態に更新し、申請者へ通知を送信する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - cancelled_by_user_id (int) : 取消した管理者ユーザー内部ID (必須)
+    - loan_request_admin_cancel_request (LoanRequestAdminCancelRequest) : 管理者申請取消リクエスト (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 取消可能な状態ではない場合（「申請中」の申請は却下（F09）で取消する対象のため、本機能の対象は「承認済み」のみ）
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 貸出申請を取消する
+    3. 貸出申請の詳細を取得する
+    4. 申請者へ通知する
+    5. 戻り値を返却
+    """
+
+    # 1. 対象の貸出申請を取得する
+    target_loan_request = crud.get_loan_request_by_id(db, loan_request_id)
+    if target_loan_request is None:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.status != "approved":
+        raise HTTPException(status_code=400, detail="この申請は取消できません")
+
+    # 2. 貸出申請を取消する
+    crud.cancel_loan_request(
+        db, loan_request_id, cancelled_by_user_id, loan_request_admin_cancel_request.cancellation_reason
+    )
+
+    # 3. 貸出申請の詳細を取得する
+    loan_request_detail = crud.get_loan_request_detail_by_id(db, loan_request_id)
+    assert loan_request_detail is not None
+
+    # 4. 申請者へ通知する
+    crud.create_notification(db, target_loan_request.applicant_user_id, "cancelled", loan_request_id)
+
+    # 5. 戻り値を返却
+    return loan_request_detail

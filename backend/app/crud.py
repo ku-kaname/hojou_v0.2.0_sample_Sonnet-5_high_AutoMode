@@ -87,6 +87,72 @@ class EquipmentImportRow:
     location: str | None
 
 
+@dataclass
+class LoanRequestDetailRow:
+    """
+    貸出申請詳細行
+
+    【概要】
+    貸出申請詳細取得（LOAN_REQUESTとEQUIPMENT・USERの結合結果）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - asset_number (str): 資産番号
+    - equipment_name (str): 備品名
+    - applicant_name (str): 申請者氏名
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - purpose (str): 用途
+    - status (str): 状態
+    - rejection_reason (str | None): 却下・取消理由
+    - requested_at (datetime): 申請日時
+    - decided_at (datetime | None): 承認・却下日時
+    - cancelled_at (datetime | None): 取消日時
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    rejection_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    cancelled_at: datetime | None
+
+
+@dataclass
+class PendingLoanRequestRow:
+    """
+    承認待ち申請一覧行
+
+    【概要】
+    承認待ち申請一覧取得（LOAN_REQUESTとEQUIPMENT・USERの結合結果）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - asset_number (str): 資産番号
+    - equipment_name (str): 備品名
+    - applicant_name (str): 申請者氏名
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - purpose (str): 用途
+    - requested_at (datetime): 申請日時
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    requested_at: datetime
+
+
 # ====================================================================================================
 # ユーザー操作
 # - get_user_by_user_id : ユーザー取得（ユーザーID指定）
@@ -1308,3 +1374,405 @@ def bulk_create_equipments(db: Session, equipment_list: list[EquipmentImportRow]
 
     # 2. 戻り値を返却
     return len(equipment_list)
+
+
+# ====================================================================================================
+# 貸出申請・承認操作
+# - create_loan_request : 貸出申請登録
+# - get_loan_request_by_id : 申請取得（内部ID指定）
+# - get_loan_request_detail_by_id : 申請詳細取得（内部ID指定）
+# - cancel_loan_request : 申請取消
+# - approve_loan_request : 申請承認
+# - reject_loan_request : 申請却下
+# - get_pending_loan_requests : 承認待ち申請一覧取得
+# - get_active_admin_users : 有効管理者一覧取得
+# - exists_overlapping_loan_request_by_equipment : 期間重複確認（備品指定）
+
+# 設計書：CRUD/貸出申請・承認/
+# ====================================================================================================
+
+
+def create_loan_request(
+    db: Session,
+    equipment_internal_id: int,
+    applicant_user_id: int,
+    start_date: date,
+    due_date: date,
+    purpose: str,
+) -> LoanRequest:
+    """
+    貸出申請登録
+
+    設計書：CRUD/貸出申請・承認/貸出申請登録_v0.1.0.md
+
+    【処理概要】
+    - 備品内部ID・申請者ユーザー内部ID・開始日・返却予定日・用途を設定した申請レコードを新規作成し、DBに追加する。状態は「申請中」で初期化する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 備品内部ID (必須)
+    - applicant_user_id (int) : 申請者ユーザー内部ID (必須)
+    - start_date (date) : 開始日 (必須)
+    - due_date (date) : 返却予定日 (必須)
+    - purpose (str) : 用途 (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest) : 貸出申請情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出申請レコードを新規作成してDBに追加
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出申請レコードを新規作成してDBに追加
+    loan_request = LoanRequest(
+        equipment_id=equipment_internal_id,
+        applicant_user_id=applicant_user_id,
+        start_date=start_date,
+        due_date=due_date,
+        purpose=purpose,
+        status="pending",
+        requested_at=datetime.now(),
+    )
+    db.add(loan_request)
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def get_loan_request_by_id(db: Session, loan_request_internal_id: int) -> LoanRequest | None:
+    """
+    申請取得（内部ID指定）
+
+    設計書：CRUD/貸出申請・承認/申請取得（内部ID指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請をLOAN_REQUESTテーブルから取得する。該当がない場合はNoneを返す。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest | None) : 貸出申請情報。該当がない場合はNone
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 申請取得
+    2. 戻り値を返却
+    """
+
+    # 1. 申請取得
+    # 2. 戻り値を返却
+    return db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).first()
+
+
+def get_loan_request_detail_by_id(db: Session, loan_request_internal_id: int) -> LoanRequestDetailRow | None:
+    """
+    申請詳細取得（内部ID指定）
+
+    設計書：CRUD/貸出申請・承認/申請詳細取得（内部ID指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請を、EQUIPMENTテーブル・USERテーブルと結合して取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow | None) : 貸出申請詳細情報。該当がない場合はNone
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出申請の詳細を取得
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出申請の詳細を取得
+    row = (
+        db.query(LoanRequest, Equipment.asset_number, Equipment.name, User.name)
+        .join(Equipment, LoanRequest.equipment_id == Equipment.id)
+        .join(User, LoanRequest.applicant_user_id == User.id)
+        .filter(LoanRequest.id == loan_request_internal_id)
+        .first()
+    )
+    if row is None:
+        return None
+    loan_request, asset_number, equipment_name, applicant_name = row
+
+    # 2. 戻り値を返却
+    return LoanRequestDetailRow(
+        id=loan_request.id,
+        asset_number=asset_number,
+        equipment_name=equipment_name,
+        applicant_name=applicant_name,
+        start_date=loan_request.start_date,
+        due_date=loan_request.due_date,
+        purpose=loan_request.purpose,
+        status=loan_request.status,
+        rejection_reason=loan_request.rejection_reason,
+        requested_at=loan_request.requested_at,
+        decided_at=loan_request.decided_at,
+        cancelled_at=loan_request.cancelled_at,
+    )
+
+
+def cancel_loan_request(
+    db: Session,
+    loan_request_internal_id: int,
+    cancelled_by_user_id: int,
+    cancellation_reason: str | None,
+) -> LoanRequest:
+    """
+    申請取消
+
+    設計書：CRUD/貸出申請・承認/申請取消_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請の状態を「取消」に更新する。
+    - 申請者本人による取消（F06）・管理者による取消（F12）の双方から呼び出される。取消理由は、管理者取消時は入力値を設定し、申請者本人取消時はNoneを設定する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+    - cancelled_by_user_id (int) : 取消した者ユーザー内部ID (必須)
+    - cancellation_reason (str | None) : 取消理由 (申請者本人取消時はNone)
+
+    【戻り値】
+    - loan_request (LoanRequest) : 更新後の貸出申請情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 申請取消
+    2. 戻り値を返却
+    """
+
+    # 1. 申請取消
+    loan_request = db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).one()
+    loan_request.status = "cancelled"
+    loan_request.rejection_reason = cancellation_reason
+    loan_request.cancelled_by_user_id = cancelled_by_user_id
+    loan_request.cancelled_at = datetime.now()
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def approve_loan_request(db: Session, loan_request_internal_id: int, approved_by_user_id: int) -> LoanRequest:
+    """
+    申請承認
+
+    設計書：CRUD/貸出申請・承認/申請承認_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請の状態を「承認済み」に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+    - approved_by_user_id (int) : 承認した管理者ユーザー内部ID (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest) : 更新後の貸出申請情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 申請承認
+    2. 戻り値を返却
+    """
+
+    # 1. 申請承認
+    loan_request = db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).one()
+    loan_request.status = "approved"
+    loan_request.approved_by_user_id = approved_by_user_id
+    loan_request.decided_at = datetime.now()
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def reject_loan_request(
+    db: Session,
+    loan_request_internal_id: int,
+    approved_by_user_id: int,
+    rejection_reason: str,
+) -> LoanRequest:
+    """
+    申請却下
+
+    設計書：CRUD/貸出申請・承認/申請却下_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請の状態を「却下」に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+    - approved_by_user_id (int) : 却下した管理者ユーザー内部ID (必須)
+    - rejection_reason (str) : 却下理由 (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest) : 更新後の貸出申請情報
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 申請却下
+    2. 戻り値を返却
+    """
+
+    # 1. 申請却下
+    loan_request = db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).one()
+    loan_request.status = "rejected"
+    loan_request.rejection_reason = rejection_reason
+    loan_request.approved_by_user_id = approved_by_user_id
+    loan_request.decided_at = datetime.now()
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def get_pending_loan_requests(db: Session) -> list[PendingLoanRequestRow]:
+    """
+    承認待ち申請一覧取得
+
+    設計書：CRUD/貸出申請・承認/承認待ち申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - LOAN_REQUESTテーブルを、EQUIPMENTテーブル・USERテーブルと結合し、状態が「申請中」のレコードを申請日時の昇順で取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - pending_loan_requests (list[PendingLoanRequestRow]) : 承認待ち申請一覧情報。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 承認待ち申請一覧を取得
+    2. 戻り値を返却
+    """
+
+    # 1. 承認待ち申請一覧を取得
+    rows = (
+        db.query(LoanRequest, Equipment.asset_number, Equipment.name, User.name)
+        .join(Equipment, LoanRequest.equipment_id == Equipment.id)
+        .join(User, LoanRequest.applicant_user_id == User.id)
+        .filter(LoanRequest.status == "pending")
+        .order_by(LoanRequest.requested_at.asc())
+        .all()
+    )
+
+    # 2. 戻り値を返却
+    return [
+        PendingLoanRequestRow(
+            id=loan_request.id,
+            asset_number=asset_number,
+            equipment_name=equipment_name,
+            applicant_name=applicant_name,
+            start_date=loan_request.start_date,
+            due_date=loan_request.due_date,
+            purpose=loan_request.purpose,
+            requested_at=loan_request.requested_at,
+        )
+        for loan_request, asset_number, equipment_name, applicant_name in rows
+    ]
+
+
+def get_active_admin_users(db: Session) -> list[User]:
+    """
+    有効管理者一覧取得
+
+    設計書：CRUD/貸出申請・承認/有効管理者一覧取得_v0.1.0.md
+
+    【処理概要】
+    - USERテーブルから、権限が「管理者」かつ有効状態のレコードを取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - active_admin_users (list[User]) : 有効管理者一覧情報。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 有効管理者一覧を取得
+    2. 戻り値を返却
+    """
+
+    # 1. 有効管理者一覧を取得
+    # 2. 戻り値を返却
+    return db.query(User).filter(User.role == "admin", User.is_active.is_(True)).all()
+
+
+def exists_overlapping_loan_request_by_equipment(
+    db: Session,
+    equipment_internal_id: int,
+    start_date: date,
+    due_date: date,
+) -> bool:
+    """
+    期間重複確認（備品指定）
+
+    設計書：CRUD/貸出申請・承認/期間重複確認（備品指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の備品内部IDに一致し、状態が「承認済み」「貸出中」のいずれかであり、かつ入力値の開始日〜返却予定日と期間が重複する申請がLOAN_REQUESTテーブルに存在するかどうかを取得する。
+    - 期間の重複判定は、開始日〜返却予定日の両端を含む日単位で行う。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 備品内部ID (必須)
+    - start_date (date) : 開始日 (必須)
+    - due_date (date) : 返却予定日 (必須)
+
+    【戻り値】
+    - exists (bool) : 重複する申請が1件以上存在する場合True、存在しない場合False
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 期間重複確認
+    2. 戻り値を返却
+    """
+
+    # 1. 期間重複確認
+    overlapping_count = (
+        db.query(func.count(LoanRequest.id))
+        .filter(
+            LoanRequest.equipment_id == equipment_internal_id,
+            LoanRequest.status.in_(["approved", "lending"]),
+            LoanRequest.start_date <= due_date,
+            LoanRequest.due_date >= start_date,
+        )
+        .scalar()
+    )
+
+    # 2. 戻り値を返却
+    return overlapping_count >= 1
