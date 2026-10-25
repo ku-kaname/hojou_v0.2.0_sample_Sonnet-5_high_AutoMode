@@ -390,3 +390,82 @@ class LoanLendReturnResponse(BaseModel):
     lent_at: datetime
     returned_at: datetime | None
     return_note: str | None
+
+
+# ====================================================================================================
+# 履歴・状況確認操作スキーマ
+# - MyLoanRequestListItemResponse : 自分申請一覧要素応答
+# - OverdueLoanRequestListItemResponse : 期限超過一覧要素応答
+# - LoanRequestHistoryListItemResponse : 貸出履歴一覧要素応答
+
+# 設計書：スキーマ（schemas）/履歴・状況確認操作_v0.1.0.md
+# ====================================================================================================
+
+
+class MyLoanRequestListItemResponse(BaseModel):
+    """
+    自分申請一覧要素応答
+
+    設計書：スキーマ（schemas）/履歴・状況確認操作_v0.1.0.md
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    rejection_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    lent_at: datetime | None
+    returned_at: datetime | None
+    cancelled_at: datetime | None
+    return_note: str | None
+
+
+class OverdueLoanRequestListItemResponse(BaseModel):
+    """
+    期限超過一覧要素応答
+
+    設計書：スキーマ（schemas）/履歴・状況確認操作_v0.1.0.md
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    lent_at: datetime
+    overdue_days: int
+
+
+class LoanRequestHistoryListItemResponse(BaseModel):
+    """
+    貸出履歴一覧要素応答
+
+    設計書：スキーマ（schemas）/履歴・状況確認操作_v0.1.0.md
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    rejection_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    approved_by_name: str | None
+    lent_at: datetime | None
+    lent_by_name: str | None
+    returned_at: datetime | None
+    returned_by_name: str | None
+    return_note: str | None
+    cancelled_at: datetime | None
+    cancelled_by_name: str | None

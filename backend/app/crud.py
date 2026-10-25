@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models import Equipment, LoanRequest, Notification, User
 
@@ -191,6 +191,129 @@ class DueReminderLoanRequest:
 
     id: int
     applicant_user_id: int
+
+
+@dataclass
+class MyLoanRequestRow:
+    """
+    自分申請一覧行
+
+    【概要】
+    自分申請一覧取得（LOAN_REQUESTとEQUIPMENTの結合結果）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - asset_number (str): 資産番号
+    - equipment_name (str): 備品名
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - purpose (str): 用途
+    - status (str): 状態
+    - rejection_reason (str | None): 却下・取消理由
+    - requested_at (datetime): 申請日時
+    - decided_at (datetime | None): 承認・却下日時
+    - lent_at (datetime | None): 貸出日時
+    - returned_at (datetime | None): 返却日時
+    - cancelled_at (datetime | None): 取消日時
+    - return_note (str | None): 返却時状態メモ
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    rejection_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    lent_at: datetime | None
+    returned_at: datetime | None
+    cancelled_at: datetime | None
+    return_note: str | None
+
+
+@dataclass
+class OverdueLoanRequestRow:
+    """
+    期限超過一覧行
+
+    【概要】
+    期限超過一覧取得（LOAN_REQUESTとEQUIPMENT・USERの結合結果）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - asset_number (str): 資産番号
+    - equipment_name (str): 備品名
+    - applicant_name (str): 申請者氏名
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - purpose (str): 用途
+    - lent_at (datetime): 貸出日時
+    - overdue_days (int): 期限超過日数
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    lent_at: datetime
+    overdue_days: int
+
+
+@dataclass
+class LoanRequestHistoryRow:
+    """
+    貸出履歴一覧行
+
+    【概要】
+    貸出履歴検索（LOAN_REQUESTとEQUIPMENT・USER（申請者・承認者・貸出処理者・返却処理者・取消処理者）の結合結果）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - asset_number (str): 資産番号
+    - equipment_name (str): 備品名
+    - applicant_name (str): 申請者氏名
+    - start_date (date): 開始日
+    - due_date (date): 返却予定日
+    - purpose (str): 用途
+    - status (str): 状態
+    - rejection_reason (str | None): 却下・取消理由
+    - requested_at (datetime): 申請日時
+    - decided_at (datetime | None): 承認・却下日時
+    - approved_by_name (str | None): 承認・却下者氏名
+    - lent_at (datetime | None): 貸出日時
+    - lent_by_name (str | None): 貸出処理者氏名
+    - returned_at (datetime | None): 返却日時
+    - returned_by_name (str | None): 返却処理者氏名
+    - return_note (str | None): 返却時状態メモ
+    - cancelled_at (datetime | None): 取消日時
+    - cancelled_by_name (str | None): 取消処理者氏名
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    rejection_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    approved_by_name: str | None
+    lent_at: datetime | None
+    lent_by_name: str | None
+    returned_at: datetime | None
+    returned_by_name: str | None
+    return_note: str | None
+    cancelled_at: datetime | None
+    cancelled_by_name: str | None
 
 
 # ====================================================================================================
@@ -2062,3 +2185,221 @@ def get_due_reminder_loan_requests(db: Session, today: date, tomorrow: date) -> 
 
     # 2. 戻り値を返却
     return [DueReminderLoanRequest(id=row.id, applicant_user_id=row.applicant_user_id) for row in rows]
+
+
+# ====================================================================================================
+# 履歴・状況確認
+# - get_my_loan_requests : 自分申請一覧取得
+# - get_overdue_loan_requests : 期限超過一覧取得
+# - get_loan_request_history : 貸出履歴検索
+
+# 設計書：CRUD/履歴・状況確認/
+# ====================================================================================================
+
+
+def get_my_loan_requests(db: Session, applicant_user_id: int) -> list[MyLoanRequestRow]:
+    """
+    自分申請一覧取得
+
+    設計書：CRUD/履歴・状況確認/自分申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 指定した申請者ユーザーが行った貸出申請を、申請日時の降順で一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - applicant_user_id (int) : 申請者ユーザー内部ID (必須)
+
+    【戻り値】
+    - my_loan_requests (list[MyLoanRequestRow]) : 自分申請一覧情報。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 自分申請一覧を取得
+    2. 戻り値を返却
+    """
+
+    # 1. 自分申請一覧を取得
+    rows = (
+        db.query(LoanRequest, Equipment.asset_number, Equipment.name)
+        .join(Equipment, LoanRequest.equipment_id == Equipment.id)
+        .filter(LoanRequest.applicant_user_id == applicant_user_id)
+        .order_by(LoanRequest.requested_at.desc())
+        .all()
+    )
+
+    # 2. 戻り値を返却
+    return [
+        MyLoanRequestRow(
+            id=loan_request.id,
+            asset_number=asset_number,
+            equipment_name=equipment_name,
+            start_date=loan_request.start_date,
+            due_date=loan_request.due_date,
+            purpose=loan_request.purpose,
+            status=loan_request.status,
+            rejection_reason=loan_request.rejection_reason,
+            requested_at=loan_request.requested_at,
+            decided_at=loan_request.decided_at,
+            lent_at=loan_request.lent_at,
+            returned_at=loan_request.returned_at,
+            cancelled_at=loan_request.cancelled_at,
+            return_note=loan_request.return_note,
+        )
+        for loan_request, asset_number, equipment_name in rows
+    ]
+
+
+def get_overdue_loan_requests(db: Session, today: date) -> list[OverdueLoanRequestRow]:
+    """
+    期限超過一覧取得
+
+    設計書：CRUD/履歴・状況確認/期限超過一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 返却予定日を過ぎた「貸出中」の申請を一覧取得し、各申請の期限超過日数を算出する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - today (date) : 今日 (必須)
+
+    【戻り値】
+    - overdue_loan_requests (list[OverdueLoanRequestRow]) : 期限超過申請一覧情報。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 期限超過申請一覧を取得
+    2. 戻り値を返却
+    """
+
+    # 1. 期限超過申請一覧を取得
+    rows = (
+        db.query(LoanRequest, Equipment.asset_number, Equipment.name, User.name)
+        .join(Equipment, LoanRequest.equipment_id == Equipment.id)
+        .join(User, LoanRequest.applicant_user_id == User.id)
+        .filter(LoanRequest.status == "lending", LoanRequest.due_date < today)
+        .order_by(LoanRequest.due_date.asc())
+        .all()
+    )
+
+    # 2. 戻り値を返却
+    return [
+        OverdueLoanRequestRow(
+            id=loan_request.id,
+            asset_number=asset_number,
+            equipment_name=equipment_name,
+            applicant_name=applicant_name,
+            start_date=loan_request.start_date,
+            due_date=loan_request.due_date,
+            purpose=loan_request.purpose,
+            lent_at=loan_request.lent_at,
+            overdue_days=(today - loan_request.due_date).days,
+        )
+        for loan_request, asset_number, equipment_name, applicant_name in rows
+    ]
+
+
+def get_loan_request_history(
+    db: Session,
+    start_date_from: date | None,
+    start_date_to: date | None,
+    asset_number: str | None,
+    user_id: str | None,
+) -> list[LoanRequestHistoryRow]:
+    """
+    貸出履歴検索
+
+    設計書：CRUD/履歴・状況確認/貸出履歴検索_v0.1.0.md
+
+    【処理概要】
+    - 検索条件（期間・備品・借用者）に応じて、全ユーザーの貸出申請を履歴として一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - start_date_from (date | None) : 開始日検索条件（自）。未指定時はNone
+    - start_date_to (date | None) : 開始日検索条件（至）。未指定時はNone
+    - asset_number (str | None) : 資産番号検索条件。未指定時はNone。完全一致
+    - user_id (str | None) : 借用者ユーザーID検索条件。未指定時はNone。完全一致
+
+    【戻り値】
+    - loan_request_history (list[LoanRequestHistoryRow]) : 貸出履歴一覧情報。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出履歴一覧を取得
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出履歴一覧を取得
+    approved_by_user = aliased(User)
+    lent_by_user = aliased(User)
+    returned_by_user = aliased(User)
+    cancelled_by_user = aliased(User)
+    query = (
+        db.query(
+            LoanRequest,
+            Equipment.asset_number,
+            Equipment.name,
+            User.name,
+            approved_by_user.name,
+            lent_by_user.name,
+            returned_by_user.name,
+            cancelled_by_user.name,
+        )
+        .join(Equipment, LoanRequest.equipment_id == Equipment.id)
+        .join(User, LoanRequest.applicant_user_id == User.id)
+        .outerjoin(approved_by_user, LoanRequest.approved_by_user_id == approved_by_user.id)
+        .outerjoin(lent_by_user, LoanRequest.lent_by_user_id == lent_by_user.id)
+        .outerjoin(returned_by_user, LoanRequest.returned_by_user_id == returned_by_user.id)
+        .outerjoin(cancelled_by_user, LoanRequest.cancelled_by_user_id == cancelled_by_user.id)
+    )
+    if start_date_from is not None:
+        query = query.filter(LoanRequest.start_date >= start_date_from)
+    if start_date_to is not None:
+        query = query.filter(LoanRequest.start_date <= start_date_to)
+    if asset_number is not None:
+        query = query.filter(Equipment.asset_number == asset_number)
+    if user_id is not None:
+        query = query.filter(User.user_id == user_id)
+    rows = query.order_by(LoanRequest.start_date.desc()).all()
+
+    # 2. 戻り値を返却
+    return [
+        LoanRequestHistoryRow(
+            id=loan_request.id,
+            asset_number=asset_number,
+            equipment_name=equipment_name,
+            applicant_name=applicant_name,
+            start_date=loan_request.start_date,
+            due_date=loan_request.due_date,
+            purpose=loan_request.purpose,
+            status=loan_request.status,
+            rejection_reason=loan_request.rejection_reason,
+            requested_at=loan_request.requested_at,
+            decided_at=loan_request.decided_at,
+            approved_by_name=approved_by_name,
+            lent_at=loan_request.lent_at,
+            lent_by_name=lent_by_name,
+            returned_at=loan_request.returned_at,
+            returned_by_name=returned_by_name,
+            return_note=loan_request.return_note,
+            cancelled_at=loan_request.cancelled_at,
+            cancelled_by_name=cancelled_by_name,
+        )
+        for (
+            loan_request,
+            asset_number,
+            equipment_name,
+            applicant_name,
+            approved_by_name,
+            lent_by_name,
+            returned_by_name,
+            cancelled_by_name,
+        ) in rows
+    ]

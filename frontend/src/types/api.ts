@@ -178,3 +178,61 @@ export interface LoanLendReturnResponse {
   returned_at: string | null;
   return_note: string | null;
 }
+
+export interface MyLoanRequestListItemResponse {
+  id: number;
+  asset_number: string;
+  equipment_name: string;
+  start_date: string;
+  due_date: string;
+  purpose: string;
+  status: LoanRequestStatus;
+  rejection_reason: string | null;
+  requested_at: string;
+  decided_at: string | null;
+  lent_at: string | null;
+  returned_at: string | null;
+  cancelled_at: string | null;
+  return_note: string | null;
+}
+
+export interface OverdueLoanRequestListItemResponse {
+  id: number;
+  asset_number: string;
+  equipment_name: string;
+  applicant_name: string;
+  start_date: string;
+  due_date: string;
+  purpose: string;
+  lent_at: string;
+  overdue_days: number;
+}
+
+export interface LoanRequestHistoryListItemResponse {
+  id: number;
+  asset_number: string;
+  equipment_name: string;
+  applicant_name: string;
+  start_date: string;
+  due_date: string;
+  purpose: string;
+  status: LoanRequestStatus;
+  rejection_reason: string | null;
+  requested_at: string;
+  decided_at: string | null;
+  approved_by_name: string | null;
+  lent_at: string | null;
+  lent_by_name: string | null;
+  returned_at: string | null;
+  returned_by_name: string | null;
+  return_note: string | null;
+  cancelled_at: string | null;
+  cancelled_by_name: string | null;
+}
+
+export interface LoanRequestHistorySearchParams {
+  start_date_from?: string;
+  start_date_to?: string;
+  asset_number?: string;
+  user_id?: string;
+}

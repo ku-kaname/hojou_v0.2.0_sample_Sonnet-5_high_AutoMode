@@ -18,6 +18,8 @@ import { EquipmentDetailPage } from "./pages/EquipmentDetailPage";
 import { EquipmentManagementPage } from "./pages/EquipmentManagementPage";
 import { MyRequestsPage } from "./pages/MyRequestsPage";
 import { RequestManagementPage } from "./pages/RequestManagementPage";
+import { OverdueLoanRequestsPage } from "./pages/OverdueLoanRequestsPage";
+import { LoanRequestHistoryPage } from "./pages/LoanRequestHistoryPage";
 
 export function App() {
   return (
@@ -35,6 +37,8 @@ export function App() {
               <Route path="/users" element={<UserManagementPage />} />
               <Route path="/equipment-management" element={<EquipmentManagementPage />} />
               <Route path="/request-management" element={<RequestManagementPage />} />
+              <Route path="/overdue-loan-requests" element={<OverdueLoanRequestsPage />} />
+              <Route path="/loan-request-history" element={<LoanRequestHistoryPage />} />
             </Route>
           </Route>
         </Route>

@@ -12,7 +12,7 @@ import csv
 import io
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import HTTPException
 from pwdlib import PasswordHash
@@ -1555,3 +1555,252 @@ def generate_due_reminder_notifications(db: Session) -> None:
         )
 
     # 3. 戻り値を返却
+
+
+# ====================================================================================================
+# 履歴・状況確認
+# - get_my_loan_requests : 自分申請一覧取得
+# - get_overdue_loan_requests : 期限超過一覧取得
+# - get_loan_request_history : 貸出履歴検索・取得
+# - generate_loan_request_history_csv : 貸出履歴CSV出力
+
+# 設計書：サーバー処理（main）/履歴・状況確認/
+# ====================================================================================================
+
+_LOAN_REQUEST_STATUS_LABELS = {
+    "pending": "申請中",
+    "approved": "承認済み",
+    "lending": "貸出中",
+    "returned": "返却済み",
+    "rejected": "却下",
+    "cancelled": "取消",
+}
+
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@")
+
+_LOAN_REQUEST_HISTORY_CSV_HEADER = [
+    "資産番号",
+    "備品名",
+    "申請者氏名",
+    "開始日",
+    "返却予定日",
+    "用途",
+    "状態",
+    "却下・取消理由",
+    "申請日時",
+    "承認・却下日時",
+    "承認・却下者氏名",
+    "貸出日時",
+    "貸出処理者氏名",
+    "返却日時",
+    "返却処理者氏名",
+    "状態メモ",
+    "取消日時",
+    "取消処理者氏名",
+]
+
+
+def get_my_loan_requests(db: Session, applicant_user_id: int) -> list[crud.MyLoanRequestRow]:
+    """
+    自分申請一覧取得
+
+    設計書：サーバー処理（main）/履歴・状況確認/自分申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - ログイン中のユーザーが申請者である貸出申請を、申請日時の降順で一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - applicant_user_id (int) : 申請者ユーザー内部ID (必須)
+
+    【戻り値】
+    - my_loan_request_list (list[MyLoanRequestRow]) : 自分申請一覧行リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 自分申請一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1〜2. 自分申請一覧取得・戻り値を返却
+    return crud.get_my_loan_requests(db, applicant_user_id)
+
+
+def get_overdue_loan_requests(db: Session) -> list[crud.OverdueLoanRequestRow]:
+    """
+    期限超過一覧取得
+
+    設計書：サーバー処理（main）/履歴・状況確認/期限超過一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 今日の日付を基準に、状態が「貸出中」かつ返却予定日を過ぎた申請を、返却予定日の昇順で一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - overdue_loan_request_list (list[OverdueLoanRequestRow]) : 期限超過申請一覧行リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 今日の日付（JST）を取得する
+    2. 期限超過一覧を取得する
+    3. 戻り値を返却
+    """
+
+    # 1. 今日の日付（JST）を取得する
+    today = date.today()
+
+    # 2〜3. 期限超過一覧取得・戻り値を返却
+    return crud.get_overdue_loan_requests(db, today)
+
+
+def get_loan_request_history(
+    db: Session,
+    start_date_from: date | None,
+    start_date_to: date | None,
+    asset_number: str | None,
+    user_id: str | None,
+) -> list[crud.LoanRequestHistoryRow]:
+    """
+    貸出履歴検索・取得
+
+    設計書：サーバー処理（main）/履歴・状況確認/貸出履歴検索・取得_v0.1.0.md
+
+    【処理概要】
+    - 開始日の範囲・資産番号・借用者ユーザーIDの検索条件（いずれも省略可）に応じて、貸出履歴を開始日の降順で一覧取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - start_date_from (date | None) : 開始日検索条件（自）。未指定時は絞り込みなし
+    - start_date_to (date | None) : 開始日検索条件（至）。未指定時は絞り込みなし
+    - asset_number (str | None) : 資産番号検索条件。未指定時は絞り込みなし。完全一致
+    - user_id (str | None) : 借用者ユーザーID検索条件。未指定時は絞り込みなし。完全一致
+
+    【戻り値】
+    - loan_request_history_list (list[LoanRequestHistoryRow]) : 貸出履歴一覧行リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出履歴一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1〜2. 貸出履歴一覧取得・戻り値を返却
+    return crud.get_loan_request_history(db, start_date_from, start_date_to, asset_number, user_id)
+
+
+def _format_datetime_for_csv(value: datetime | None) -> str:
+    """
+    日時CSV文字列変換
+
+    【概要】
+    日時をCSV出力用の文字列に変換する。未設定時は空欄を返す
+
+    【パラメータ】
+    - value (datetime | None) : 変換対象の日時
+
+    【戻り値】
+    - formatted_value (str) : 変換後の文字列。未設定時は空欄
+    """
+
+    if value is None:
+        return ""
+    return value.isoformat(sep=" ", timespec="seconds")
+
+
+def _escape_csv_injection(value: str) -> str:
+    """
+    CSV数式注入対策
+
+    【概要】
+    値の先頭文字が`=`・`+`・`-`・`@`のいずれかの場合、値の先頭に`'`を付与する
+
+    【パラメータ】
+    - value (str) : 変換対象の値
+
+    【戻り値】
+    - escaped_value (str) : 変換後の値
+    """
+
+    if value.startswith(_CSV_INJECTION_PREFIXES):
+        return f"'{value}"
+    return value
+
+
+def generate_loan_request_history_csv(
+    db: Session,
+    start_date_from: date | None,
+    start_date_to: date | None,
+    asset_number: str | None,
+    user_id: str | None,
+) -> str:
+    """
+    貸出履歴CSV出力
+
+    設計書：サーバー処理（main）/履歴・状況確認/貸出履歴CSV出力_v0.1.0.md
+
+    【処理概要】
+    - 「貸出履歴検索・取得」と同一の検索条件・取得処理で貸出履歴を取得する。
+    - 取得結果の状態を日本語ラベルに変換する。
+    - 取得結果をCSV形式に変換する。数式注入対策として、文字列項目の先頭が`=`・`+`・`-`・`@`の場合は先頭に`'`を付与する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - start_date_from (date | None) : 開始日検索条件（自）。未指定時は絞り込みなし
+    - start_date_to (date | None) : 開始日検索条件（至）。未指定時は絞り込みなし
+    - asset_number (str | None) : 資産番号検索条件。未指定時は絞り込みなし。完全一致
+    - user_id (str | None) : 借用者ユーザーID検索条件。未指定時は絞り込みなし。完全一致
+
+    【戻り値】
+    - csv_text (str) : CSVデータ（ヘッダー行を含む）
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出履歴一覧を取得する
+    2. 状態を日本語ラベルに変換する
+    3. CSVデータを生成する
+    4. 戻り値を返却
+    """
+
+    # 1. 貸出履歴一覧を取得する
+    loan_request_history_list = get_loan_request_history(db, start_date_from, start_date_to, asset_number, user_id)
+
+    # 2〜3. 状態を日本語ラベルに変換・CSVデータを生成する
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(_LOAN_REQUEST_HISTORY_CSV_HEADER)
+    for loan_request_history in loan_request_history_list:
+        writer.writerow(
+            [
+                _escape_csv_injection(loan_request_history.asset_number),
+                _escape_csv_injection(loan_request_history.equipment_name),
+                _escape_csv_injection(loan_request_history.applicant_name),
+                loan_request_history.start_date.isoformat(),
+                loan_request_history.due_date.isoformat(),
+                _escape_csv_injection(loan_request_history.purpose),
+                _LOAN_REQUEST_STATUS_LABELS[loan_request_history.status],
+                _escape_csv_injection(loan_request_history.rejection_reason or ""),
+                _format_datetime_for_csv(loan_request_history.requested_at),
+                _format_datetime_for_csv(loan_request_history.decided_at),
+                _escape_csv_injection(loan_request_history.approved_by_name or ""),
+                _format_datetime_for_csv(loan_request_history.lent_at),
+                _escape_csv_injection(loan_request_history.lent_by_name or ""),
+                _format_datetime_for_csv(loan_request_history.returned_at),
+                _escape_csv_injection(loan_request_history.returned_by_name or ""),
+                _escape_csv_injection(loan_request_history.return_note or ""),
+                _format_datetime_for_csv(loan_request_history.cancelled_at),
+                _escape_csv_injection(loan_request_history.cancelled_by_name or ""),
+            ]
+        )
+
+    # 4. 戻り値を返却
+    return buffer.getvalue()

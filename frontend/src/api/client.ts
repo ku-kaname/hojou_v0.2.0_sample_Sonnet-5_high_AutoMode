@@ -116,6 +116,32 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   return (await response.json()) as T;
 }
 
+// CSV等の非JSON応答（ファイルダウンロード）を取得する
+export async function apiDownloadRequest(path: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+
+  const accessToken = getStoredAccessToken();
+  if (accessToken !== null) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(`/api${path}`, {
+    method: "GET",
+    headers,
+  });
+
+  if (response.status === 401) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    await throwApiError(response);
+  }
+
+  if (!response.ok) {
+    await throwApiError(response);
+  }
+
+  return await response.blob();
+}
+
 // multipart/form-dataでファイルを送信する（CSV一括登録等）。Content-Typeは
 // ブラウザがboundary付きで自動設定するため、明示的に設定しない。
 export async function apiUploadRequest<T>(path: string, formData: FormData): Promise<T> {

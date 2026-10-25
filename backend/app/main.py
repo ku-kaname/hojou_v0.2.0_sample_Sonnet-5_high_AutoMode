@@ -9,8 +9,9 @@
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 
-from fastapi import Depends, FastAPI, File, Path, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Path, Query, Response, UploadFile
 from pwdlib import PasswordHash
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -26,10 +27,13 @@ from app.schemas import (
     LoanLendReturnResponse,
     LoanRequestAdminCancelRequest,
     LoanRequestCreateRequest,
+    LoanRequestHistoryListItemResponse,
     LoanRequestRejectRequest,
     LoanRequestResponse,
     LoanRequestReturnRequest,
+    MyLoanRequestListItemResponse,
     NotificationResponse,
+    OverdueLoanRequestListItemResponse,
     PasswordResetRequest,
     PendingLoanRequestListItemResponse,
     ReservationPeriodResponse,
@@ -1281,3 +1285,193 @@ def return_loan_request_endpoint(
 
     # 4. 戻り値を返却
     return LoanLendReturnResponse.model_validate(loan_request_detail, from_attributes=True)
+
+
+# ====================================================================================================
+# 履歴・状況確認エンドポイント
+# - get_my_loan_requests_endpoint : 自分申請一覧取得
+# - get_overdue_loan_requests_endpoint : 期限超過一覧取得
+# - get_loan_request_history_endpoint : 貸出履歴検索・取得
+# - export_loan_request_history_endpoint : 貸出履歴CSV出力
+
+# 設計書：サーバー処理（main）/履歴・状況確認/
+# オーケストレーション層（services.py）を経由し、データアクセス層（crud.py）を直接呼び出さない。
+# ====================================================================================================
+
+
+@app.get("/loan-requests")
+def get_my_loan_requests_endpoint(
+    current_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> list[MyLoanRequestListItemResponse]:
+    """
+    自分申請一覧取得
+
+    設計書：サーバー処理（main）/履歴・状況確認/自分申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - ログイン中のユーザーが申請者である貸出申請を、申請日時の降順で一覧取得する。
+
+    【パラメータ】
+    - current_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - my_loan_request_response_list (list[MyLoanRequestListItemResponse]) : 自分申請一覧要素応答リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 自分申請一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1. 自分申請一覧を取得する
+    my_loan_request_list = services.get_my_loan_requests(db, current_user.id)
+
+    # 2. 戻り値を返却
+    return [
+        MyLoanRequestListItemResponse.model_validate(my_loan_request, from_attributes=True)
+        for my_loan_request in my_loan_request_list
+    ]
+
+
+@app.get("/loan-requests/overdue")
+def get_overdue_loan_requests_endpoint(
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> list[OverdueLoanRequestListItemResponse]:
+    """
+    期限超過一覧取得
+
+    設計書：サーバー処理（main）/履歴・状況確認/期限超過一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 今日の日付を基準に、状態が「貸出中」かつ返却予定日を過ぎた申請を、返却予定日の昇順で一覧取得する。
+
+    【パラメータ】
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - overdue_loan_request_response_list (list[OverdueLoanRequestListItemResponse]) : 期限超過一覧要素応答リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 期限超過一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1. 期限超過一覧を取得する
+    overdue_loan_request_list = services.get_overdue_loan_requests(db)
+
+    # 2. 戻り値を返却
+    return [
+        OverdueLoanRequestListItemResponse.model_validate(overdue_loan_request, from_attributes=True)
+        for overdue_loan_request in overdue_loan_request_list
+    ]
+
+
+@app.get("/loan-requests/all")
+def get_loan_request_history_endpoint(
+    start_date_from: date | None = Query(default=None),
+    start_date_to: date | None = Query(default=None),
+    asset_number: str | None = Query(default=None, min_length=0, max_length=32),
+    user_id: str | None = Query(default=None, min_length=0, max_length=32),
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> list[LoanRequestHistoryListItemResponse]:
+    """
+    貸出履歴検索・取得
+
+    設計書：サーバー処理（main）/履歴・状況確認/貸出履歴検索・取得_v0.1.0.md
+
+    【処理概要】
+    - 開始日の範囲・資産番号・借用者ユーザーIDの検索条件（いずれも省略可）に応じて、貸出履歴を開始日の降順で一覧取得する。
+
+    【パラメータ】
+    - start_date_from (date | None) : 開始日（自）
+    - start_date_to (date | None) : 開始日（至）
+    - asset_number (str | None) : 資産番号
+    - user_id (str | None) : 借用者ユーザーID
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - loan_request_history_response_list (list[LoanRequestHistoryListItemResponse]) : 貸出履歴一覧要素応答リスト。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出履歴一覧を取得する
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出履歴一覧を取得する
+    loan_request_history_list = services.get_loan_request_history(
+        db, start_date_from, start_date_to, asset_number, user_id
+    )
+
+    # 2. 戻り値を返却
+    return [
+        LoanRequestHistoryListItemResponse.model_validate(loan_request_history, from_attributes=True)
+        for loan_request_history in loan_request_history_list
+    ]
+
+
+@app.get("/loan-requests/all/export")
+def export_loan_request_history_endpoint(
+    start_date_from: date | None = Query(default=None),
+    start_date_to: date | None = Query(default=None),
+    asset_number: str | None = Query(default=None, min_length=0, max_length=32),
+    user_id: str | None = Query(default=None, min_length=0, max_length=32),
+    admin_user: UserValidationResponse = Depends(auth.require_admin),
+    password_changed_user: UserValidationResponse = Depends(auth.require_password_changed),
+    db: Session = Depends(get_db),
+) -> Response:
+    """
+    貸出履歴CSV出力
+
+    設計書：サーバー処理（main）/履歴・状況確認/貸出履歴CSV出力_v0.1.0.md
+
+    【処理概要】
+    - 「貸出履歴検索・取得」と同一の検索条件・取得処理で貸出履歴を取得し、CSV形式に変換する。
+    - UTF-8（BOM付き）でエンコードしたCSVファイルをダウンロード応答として返却する。
+
+    【パラメータ】
+    - start_date_from (date | None) : 開始日（自）
+    - start_date_to (date | None) : 開始日（至）
+    - asset_number (str | None) : 資産番号
+    - user_id (str | None) : 借用者ユーザーID
+    - admin_user (UserValidationResponse) : ロール検証結果 (必須)
+    - password_changed_user (UserValidationResponse) : 初回パスワード変更検証結果 (必須)
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - csv_file_response (Response) : CSVファイル応答。ダウンロード応答のためJSONボディは返却しない
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出履歴CSVデータを生成する
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出履歴CSVデータを生成する
+    csv_text = services.generate_loan_request_history_csv(db, start_date_from, start_date_to, asset_number, user_id)
+
+    # 2. 戻り値を返却
+    return Response(
+        content=csv_text.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="loan_history.csv"'},
+    )
