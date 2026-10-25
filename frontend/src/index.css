@@ -52,6 +52,10 @@ main {
   color: #c0392b;
 }
 
+.success-message {
+  color: #1e7e34;
+}
+
 .notification-bell {
   position: relative;
 }

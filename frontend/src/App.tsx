@@ -15,6 +15,7 @@ import { HomePage } from "./pages/HomePage";
 import { UserManagementPage } from "./pages/UserManagementPage";
 import { EquipmentListPage } from "./pages/EquipmentListPage";
 import { EquipmentDetailPage } from "./pages/EquipmentDetailPage";
+import { EquipmentManagementPage } from "./pages/EquipmentManagementPage";
 
 export function App() {
   return (
@@ -29,6 +30,7 @@ export function App() {
             <Route path="/equipment/:assetNumber" element={<EquipmentDetailPage />} />
             <Route element={<AdminRoute />}>
               <Route path="/users" element={<UserManagementPage />} />
+              <Route path="/equipment-management" element={<EquipmentManagementPage />} />
             </Route>
           </Route>
         </Route>
