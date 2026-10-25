@@ -26,6 +26,8 @@ export function Layout() {
           {user !== null && <Link to="/my-requests">自分の申請一覧</Link>}
           {user !== null && user.role === "admin" && <Link to="/equipment-management">備品管理</Link>}
           {user !== null && user.role === "admin" && <Link to="/request-management">申請管理</Link>}
+          {user !== null && user.role === "admin" && <Link to="/overdue-loan-requests">期限超過一覧</Link>}
+          {user !== null && user.role === "admin" && <Link to="/loan-request-history">貸出履歴</Link>}
           {user !== null && user.role === "admin" && <Link to="/users">ユーザー管理</Link>}
           {user !== null && <span>{user.name}さん</span>}
           <NotificationBell />
