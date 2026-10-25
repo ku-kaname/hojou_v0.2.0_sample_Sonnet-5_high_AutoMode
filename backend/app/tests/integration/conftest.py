@@ -10,6 +10,7 @@ app.database.SessionLocal・app.main.SessionLocalの両方をこのDBに向け�
 
 import itertools
 import os
+import uuid
 from collections.abc import Generator
 from datetime import date, datetime
 
@@ -155,3 +156,33 @@ def make_notification_target(db: Session):
         return loan_request.id
 
     return _make_notification_target
+
+
+@pytest.fixture
+def make_loan_request(db: Session):
+    """
+    貸出申請作成ヘルパー（状態指定）
+
+    【概要】
+    備品・貸出申請レコードを作成し、指定した状態（status）に更新したうえで貸出申請を返却する。
+    ユーザー無効化テスト等、申請中（pending）以外の状態（承認済み・貸出中等）が必要な場合に使用する。
+    資産番号はmake_notification_targetの連番と重複しないよう、呼び出しごとに一意な値を発行する。
+    """
+
+    def _make_loan_request(applicant_user_internal_id: int, status: str = "pending"):
+        asset_number = f"AST-TEST-{uuid.uuid4().hex[:8]}"
+        equipment = crud.create_equipment(db, asset_number, "結合テスト用備品", "結合テスト", None, None)
+        loan_request = crud.create_loan_request(
+            db,
+            equipment.id,
+            applicant_user_internal_id,
+            date(2026, 11, 1),
+            date(2026, 11, 10),
+            "結合テスト用",
+        )
+        loan_request.status = status
+        db.commit()
+        db.refresh(loan_request)
+        return loan_request
+
+    return _make_loan_request
