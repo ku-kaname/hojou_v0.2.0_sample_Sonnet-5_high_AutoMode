@@ -107,7 +107,10 @@ class LoanRequestDetailRow:
     - rejection_reason (str | None): 却下・取消理由
     - requested_at (datetime): 申請日時
     - decided_at (datetime | None): 承認・却下日時
+    - lent_at (datetime | None): 貸出日時
+    - returned_at (datetime | None): 返却日時
     - cancelled_at (datetime | None): 取消日時
+    - return_note (str | None): 返却時状態メモ
     """
 
     id: int
@@ -121,7 +124,10 @@ class LoanRequestDetailRow:
     rejection_reason: str | None
     requested_at: datetime
     decided_at: datetime | None
+    lent_at: datetime | None
+    returned_at: datetime | None
     cancelled_at: datetime | None
+    return_note: str | None
 
 
 @dataclass
@@ -151,6 +157,40 @@ class PendingLoanRequestRow:
     due_date: date
     purpose: str
     requested_at: datetime
+
+
+@dataclass
+class StaleLoanRequest:
+    """
+    自動取消対象申請
+
+    【概要】
+    自動取消対象申請一覧取得（LOAN_REQUEST）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - applicant_user_id (int): 申請者ユーザーID
+    """
+
+    id: int
+    applicant_user_id: int
+
+
+@dataclass
+class DueReminderLoanRequest:
+    """
+    期限通知対象申請
+
+    【概要】
+    期限通知対象申請一覧取得（LOAN_REQUEST）の1行を保持する
+
+    【属性】
+    - id (int): 内部ID
+    - applicant_user_id (int): 申請者ユーザーID
+    """
+
+    id: int
+    applicant_user_id: int
 
 
 # ====================================================================================================
@@ -1523,7 +1563,10 @@ def get_loan_request_detail_by_id(db: Session, loan_request_internal_id: int) ->
         rejection_reason=loan_request.rejection_reason,
         requested_at=loan_request.requested_at,
         decided_at=loan_request.decided_at,
+        lent_at=loan_request.lent_at,
+        returned_at=loan_request.returned_at,
         cancelled_at=loan_request.cancelled_at,
+        return_note=loan_request.return_note,
     )
 
 
@@ -1776,3 +1819,246 @@ def exists_overlapping_loan_request_by_equipment(
 
     # 2. 戻り値を返却
     return overlapping_count >= 1
+
+
+# ====================================================================================================
+# 貸出・返却操作
+# - get_equipment_by_id : 備品取得（内部ID指定）
+# - lend_loan_request : 貸出処理
+# - return_loan_request : 返却処理
+# - get_stale_loan_requests : 自動取消対象申請一覧取得
+# - auto_cancel_loan_request : 自動取消（内部ID指定）
+# - get_due_reminder_loan_requests : 期限通知対象申請一覧取得
+
+# 設計書：CRUD/貸出・返却/
+# ====================================================================================================
+
+
+def get_equipment_by_id(db: Session, equipment_internal_id: int) -> Equipment | None:
+    """
+    備品取得（内部ID指定）
+
+    設計書：CRUD/貸出・返却/備品取得（内部ID指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する備品をEQUIPMENTテーブルから取得する。該当がない場合はNoneを返す。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - equipment_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - equipment (Equipment | None) : 備品情報。該当がない場合はNone
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 備品取得
+    2. 戻り値を返却
+    """
+
+    # 1. 備品取得
+    # 2. 戻り値を返却
+    return db.query(Equipment).filter(Equipment.id == equipment_internal_id).first()
+
+
+def lend_loan_request(db: Session, loan_request_internal_id: int, lent_by_user_id: int) -> LoanRequest:
+    """
+    貸出処理
+
+    設計書：CRUD/貸出・返却/貸出処理_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請の状態を「貸出中」に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+    - lent_by_user_id (int) : 貸出処理した管理者ユーザー内部ID (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest) : 貸出申請情報（貸出処理の更新後の内容）
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 貸出処理
+    2. 戻り値を返却
+    """
+
+    # 1. 貸出処理
+    loan_request = db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).first()
+    assert loan_request is not None
+    loan_request.status = "lending"
+    loan_request.lent_by_user_id = lent_by_user_id
+    loan_request.lent_at = datetime.now()
+    db.add(loan_request)
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def return_loan_request(
+    db: Session,
+    loan_request_internal_id: int,
+    returned_by_user_id: int,
+    return_note: str | None = None,
+) -> LoanRequest:
+    """
+    返却処理
+
+    設計書：CRUD/貸出・返却/返却処理_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請の状態を「返却済み」に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+    - returned_by_user_id (int) : 返却処理した管理者ユーザー内部ID (必須)
+    - return_note (str | None) : 状態メモ
+
+    【戻り値】
+    - loan_request (LoanRequest) : 貸出申請情報（返却処理の更新後の内容）
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 返却処理
+    2. 戻り値を返却
+    """
+
+    # 1. 返却処理
+    loan_request = db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).first()
+    assert loan_request is not None
+    loan_request.status = "returned"
+    loan_request.returned_by_user_id = returned_by_user_id
+    loan_request.returned_at = datetime.now()
+    loan_request.return_note = return_note
+    db.add(loan_request)
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def get_stale_loan_requests(db: Session, today: date) -> list[StaleLoanRequest]:
+    """
+    自動取消対象申請一覧取得
+
+    設計書：CRUD/貸出・返却/自動取消対象申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 「承認済みで返却予定日を過ぎている」または「申請中で開始日を過ぎている」申請をLOAN_REQUESTテーブルから取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - today (date) : 今日 (必須)
+
+    【戻り値】
+    - stale_loan_request_list (list[StaleLoanRequest]) : 自動取消対象申請一覧。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 自動取消対象申請一覧取得
+    2. 戻り値を返却
+    """
+
+    # 1. 自動取消対象申請一覧取得
+    rows = (
+        db.query(LoanRequest.id, LoanRequest.applicant_user_id)
+        .filter(
+            or_(
+                (LoanRequest.status == "approved") & (LoanRequest.due_date < today),
+                (LoanRequest.status == "pending") & (LoanRequest.start_date < today),
+            )
+        )
+        .all()
+    )
+
+    # 2. 戻り値を返却
+    return [StaleLoanRequest(id=row.id, applicant_user_id=row.applicant_user_id) for row in rows]
+
+
+def auto_cancel_loan_request(db: Session, loan_request_internal_id: int) -> LoanRequest:
+    """
+    自動取消（内部ID指定）
+
+    設計書：CRUD/貸出・返却/自動取消（内部ID指定）_v0.1.0.md
+
+    【処理概要】
+    - 入力値の内部IDに一致する申請の状態を「取消」に更新する。取消した者ユーザーIDは設定しない（自動取消のため）。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_internal_id (int) : 内部ID (必須)
+
+    【戻り値】
+    - loan_request (LoanRequest) : 貸出申請情報（自動取消の更新後の内容）
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 自動取消
+    2. 戻り値を返却
+    """
+
+    # 1. 自動取消
+    loan_request = db.query(LoanRequest).filter(LoanRequest.id == loan_request_internal_id).first()
+    assert loan_request is not None
+    loan_request.status = "cancelled"
+    loan_request.cancelled_at = datetime.now()
+    db.add(loan_request)
+    db.commit()
+    db.refresh(loan_request)
+
+    # 2. 戻り値を返却
+    return loan_request
+
+
+def get_due_reminder_loan_requests(db: Session, today: date, tomorrow: date) -> list[DueReminderLoanRequest]:
+    """
+    期限通知対象申請一覧取得
+
+    設計書：CRUD/貸出・返却/期限通知対象申請一覧取得_v0.1.0.md
+
+    【処理概要】
+    - 「貸出中で返却予定日が明日」または「貸出中で返却予定日を過ぎている（期限超過中）」申請をLOAN_REQUESTテーブルから取得する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - today (date) : 今日 (必須)
+    - tomorrow (date) : 明日 (必須)
+
+    【戻り値】
+    - due_reminder_loan_request_list (list[DueReminderLoanRequest]) : 期限通知対象申請一覧。該当がない場合は空リスト
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 期限通知対象申請一覧取得
+    2. 戻り値を返却
+    """
+
+    # 1. 期限通知対象申請一覧取得
+    rows = (
+        db.query(LoanRequest.id, LoanRequest.applicant_user_id)
+        .filter(
+            LoanRequest.status == "lending",
+            or_(LoanRequest.due_date == tomorrow, LoanRequest.due_date < today),
+        )
+        .all()
+    )
+
+    # 2. 戻り値を返却
+    return [DueReminderLoanRequest(id=row.id, applicant_user_id=row.applicant_user_id) for row in rows]

@@ -1,15 +1,17 @@
-// 貸出申請・承認API呼び出し（貸出申請・承認）
+// 貸出申請・承認・貸出・返却API呼び出し（貸出申請・承認、貸出・返却）
 //
 // 【概要】
 // backend/app/main.pyが公開する貸出申請、申請取消、承認待ち申請一覧取得、申請承認、
-// 申請却下、管理者申請取消エンドポイントを呼び出す。
+// 申請却下、管理者申請取消、貸出処理、返却処理エンドポイントを呼び出す。
 
 import { apiRequest } from "./client";
 import type {
+  LoanLendReturnResponse,
   LoanRequestAdminCancelRequest,
   LoanRequestCreateRequest,
   LoanRequestRejectRequest,
   LoanRequestResponse,
+  LoanRequestReturnRequest,
   PendingLoanRequestListItemResponse,
 } from "../types/api";
 
@@ -46,5 +48,19 @@ export function adminCancelLoanRequest(
   return apiRequest<LoanRequestResponse>(`/loan-requests/${loanRequestId}/admin-cancel`, {
     method: "PUT",
     body: loanRequestAdminCancelRequest,
+  });
+}
+
+export function lendLoanRequest(loanRequestId: number): Promise<LoanLendReturnResponse> {
+  return apiRequest<LoanLendReturnResponse>(`/loan-requests/${loanRequestId}/lend`, { method: "PUT" });
+}
+
+export function returnLoanRequest(
+  loanRequestId: number,
+  loanRequestReturnRequest: LoanRequestReturnRequest,
+): Promise<LoanLendReturnResponse> {
+  return apiRequest<LoanLendReturnResponse>(`/loan-requests/${loanRequestId}/return`, {
+    method: "PUT",
+    body: loanRequestReturnRequest,
   });
 }

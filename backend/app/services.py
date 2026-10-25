@@ -4,15 +4,15 @@
 【概要】
 通知一覧取得・通知既読化、ユーザー管理（登録・一覧取得・詳細取得・編集・無効化・再有効化・パスワード初期化）、
 備品管理（検索・一覧取得、詳細取得、予約状況取得、登録、編集、無効化、再有効化、CSV一括登録）、
-貸出申請・承認（貸出申請、申請取消、承認待ち申請一覧取得、申請承認、申請却下、管理者申請取消）のオーケストレーション処理を定義する。
-貸出・返却機能群の日次バッチ本体（ノーショー自動取消・期限通知生成）は、貸出・返却機能群バックログで本ファイルに追加する。
+貸出申請・承認（貸出申請、申請取消、承認待ち申請一覧取得、申請承認、申請却下、管理者申請取消）、
+貸出・返却（貸出処理、返却処理、日次バッチ本体のノーショー自動取消・期限通知生成）のオーケストレーション処理を定義する。他機能群のオーケストレーション処理は各機能群バックログで追加する。
 """
 
 import csv
 import io
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import HTTPException
 from pwdlib import PasswordHash
@@ -26,6 +26,7 @@ from app.schemas import (
     LoanRequestAdminCancelRequest,
     LoanRequestCreateRequest,
     LoanRequestRejectRequest,
+    LoanRequestReturnRequest,
     PasswordResetRequest,
     UserCreateRequest,
     UserUpdateRequest,
@@ -1076,7 +1077,10 @@ def create_loan_request(
         rejection_reason=loan_request.rejection_reason,
         requested_at=loan_request.requested_at,
         decided_at=loan_request.decided_at,
+        lent_at=loan_request.lent_at,
+        returned_at=loan_request.returned_at,
         cancelled_at=loan_request.cancelled_at,
+        return_note=loan_request.return_note,
     )
 
 
@@ -1342,3 +1346,212 @@ def admin_cancel_loan_request(
 
     # 5. 戻り値を返却
     return loan_request_detail
+
+
+# ====================================================================================================
+# 貸出・返却操作
+# - lend_loan_request : 貸出処理
+# - return_loan_request : 返却処理
+# - auto_cancel_stale_requests : ノーショー自動取消
+# - generate_due_reminder_notifications : 期限通知生成
+
+# 設計書：サーバー処理（main）/貸出・返却/、オーケストレーション処理（services）/貸出・返却/
+# ====================================================================================================
+
+
+def lend_loan_request(db: Session, loan_request_id: int, lent_by_user_id: int) -> crud.LoanRequestDetailRow:
+    """
+    貸出処理
+
+    設計書：サーバー処理（main）/貸出・返却/貸出処理_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、承認済みの貸出申請に対して備品を貸し出す。
+    - 対象の貸出申請を取得し、状態が「承認済み」であること、開始日が今日以前であることを確認する。
+    - 対象備品を取得し、無効化されていないこと、貸出中の別申請が存在しないことを確認する。
+    - 申請を貸出中状態に更新する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - lent_by_user_id (int) : 貸出処理した管理者ユーザー内部ID (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 貸出処理可能な状態ではない場合
+    - HTTPException(400) : 開始日前のため貸出処理できない場合
+    - HTTPException(400) : 対象備品が無効化されている場合
+    - HTTPException(400) : 同一備品が既に貸出中の場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 対象備品を取得する
+    3. 貸出中の別申請が存在しないことを確認する
+    4. 貸出処理する
+    5. 貸出申請の詳細を取得する
+    6. 戻り値を返却
+    """
+
+    # 1. 対象の貸出申請を取得する
+    target_loan_request = crud.get_loan_request_by_id(db, loan_request_id)
+    if target_loan_request is None:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.status != "approved":
+        raise HTTPException(status_code=400, detail="この申請は貸出処理できません")
+    if target_loan_request.start_date > date.today():
+        raise HTTPException(status_code=400, detail="開始日前は貸出処理できません")
+
+    # 2. 対象備品を取得する
+    target_equipment = crud.get_equipment_by_id(db, target_loan_request.equipment_id)
+    assert target_equipment is not None
+    if not target_equipment.is_active:
+        raise HTTPException(status_code=400, detail="この備品は無効化されているため貸出処理できません")
+
+    # 3. 貸出中の別申請が存在しないことを確認する
+    lending_loan_request = crud.get_lending_loan_request_by_equipment(db, target_loan_request.equipment_id)
+    if lending_loan_request is not None:
+        raise HTTPException(status_code=400, detail="この備品は貸出中のため貸出処理できません")
+
+    # 4. 貸出処理する
+    crud.lend_loan_request(db, loan_request_id, lent_by_user_id)
+
+    # 5. 貸出申請の詳細を取得する
+    loan_request_detail = crud.get_loan_request_detail_by_id(db, loan_request_id)
+    assert loan_request_detail is not None
+
+    # 6. 戻り値を返却
+    return loan_request_detail
+
+
+def return_loan_request(
+    db: Session,
+    loan_request_id: int,
+    returned_by_user_id: int,
+    loan_request_return_request: LoanRequestReturnRequest,
+) -> crud.LoanRequestDetailRow:
+    """
+    返却処理
+
+    設計書：サーバー処理（main）/貸出・返却/返却処理_v0.1.0.md
+
+    【処理概要】
+    - 管理者が、貸出中の貸出申請に対して備品の返却を記録する。
+    - 対象の貸出申請を取得し、状態が「貸出中」であることを確認する。
+    - 申請を返却済み状態に更新する。返却日時はサーバー時刻を自動記録し、状態メモを任意で残せる。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+    - loan_request_id (int) : 内部ID (必須)
+    - returned_by_user_id (int) : 返却処理した管理者ユーザー内部ID (必須)
+    - loan_request_return_request (LoanRequestReturnRequest) : 返却処理リクエスト (必須)
+
+    【戻り値】
+    - loan_request_detail (LoanRequestDetailRow) : 貸出申請詳細行
+
+    【例外処理】
+    - HTTPException(404) : 貸出申請が取得できない場合
+    - HTTPException(400) : 返却処理可能な状態ではない場合
+
+    【処理フロー】
+    1. 対象の貸出申請を取得する
+    2. 返却処理する
+    3. 貸出申請の詳細を取得する
+    4. 戻り値を返却
+    """
+
+    # 1. 対象の貸出申請を取得する
+    target_loan_request = crud.get_loan_request_by_id(db, loan_request_id)
+    if target_loan_request is None:
+        raise HTTPException(status_code=404, detail="貸出申請が見つかりません")
+    if target_loan_request.status != "lending":
+        raise HTTPException(status_code=400, detail="この申請は返却処理できません")
+
+    # 2. 返却処理する
+    crud.return_loan_request(db, loan_request_id, returned_by_user_id, loan_request_return_request.return_note)
+
+    # 3. 貸出申請の詳細を取得する
+    loan_request_detail = crud.get_loan_request_detail_by_id(db, loan_request_id)
+    assert loan_request_detail is not None
+
+    # 4. 戻り値を返却
+    return loan_request_detail
+
+
+def auto_cancel_stale_requests(db: Session) -> None:
+    """
+    ノーショー自動取消
+
+    設計書：オーケストレーション処理（services）/貸出・返却/ノーショー自動取消_v0.1.0.md
+
+    【処理概要】
+    - 貸出処理・承認却下が行われないまま期限を過ぎた申請（ノーショー）を自動的に取消する。
+    - 「承認済みで返却予定日を過ぎている」または「申請中で開始日を過ぎている」申請を一覧取得する。
+    - 各申請を取消済み状態に更新し、申請者へ取消通知を送信する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - なし
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 自動取消対象の申請を一覧取得する
+    2. 各申請を取消し、通知する
+    3. 戻り値を返却
+    """
+
+    # 1. 自動取消対象の申請を一覧取得する
+    stale_loan_request_list = crud.get_stale_loan_requests(db, date.today())
+
+    # 2. 各申請を取消し、通知する
+    for stale_loan_request in stale_loan_request_list:
+        crud.auto_cancel_loan_request(db, stale_loan_request.id)
+        crud.create_notification(db, stale_loan_request.applicant_user_id, "cancelled", stale_loan_request.id)
+
+    # 3. 戻り値を返却
+
+
+def generate_due_reminder_notifications(db: Session) -> None:
+    """
+    期限通知生成
+
+    設計書：オーケストレーション処理（services）/貸出・返却/期限通知生成_v0.1.0.md
+
+    【処理概要】
+    - 返却期限が近い、または過ぎている貸出中の申請について、借用者へ返却期限通知を送信する。
+    - 「貸出中で返却予定日が明日」または「貸出中で返却予定日を過ぎている（期限超過中）」申請を一覧取得する。
+    - 各申請の申請者（借用者）へ返却期限通知を送信する。期限超過中は、返却されるまで日次処理のたびに毎日通知する。
+
+    【パラメータ】
+    - db (Session) : データベース (必須)
+
+    【戻り値】
+    - なし
+
+    【例外処理】
+    - なし
+
+    【処理フロー】
+    1. 期限通知対象の申請を一覧取得する
+    2. 各申請について、申請者へ通知する
+    3. 戻り値を返却
+    """
+
+    # 1. 期限通知対象の申請を一覧取得する
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    due_reminder_loan_request_list = crud.get_due_reminder_loan_requests(db, today, tomorrow)
+
+    # 2. 各申請について、申請者へ通知する
+    for due_reminder_loan_request in due_reminder_loan_request_list:
+        crud.create_notification(
+            db, due_reminder_loan_request.applicant_user_id, "due_reminder", due_reminder_loan_request.id
+        )
+
+    # 3. 戻り値を返却

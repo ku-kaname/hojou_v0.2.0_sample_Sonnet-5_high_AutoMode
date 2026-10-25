@@ -351,3 +351,42 @@ class PendingLoanRequestListItemResponse(BaseModel):
     due_date: date
     purpose: str
     requested_at: datetime
+
+
+# ====================================================================================================
+# 貸出・返却操作スキーマ
+# - LoanRequestReturnRequest : 返却処理リクエスト
+# - LoanLendReturnResponse : 貸出・返却処理応答
+
+# 設計書：スキーマ（schemas）/貸出・返却操作_v0.1.0.md
+# ====================================================================================================
+
+
+class LoanRequestReturnRequest(BaseModel):
+    """
+    返却処理リクエスト
+
+    設計書：スキーマ（schemas）/貸出・返却操作_v0.1.0.md
+    """
+
+    return_note: str | None = Field(default=None, max_length=200)
+
+
+class LoanLendReturnResponse(BaseModel):
+    """
+    貸出・返却処理応答
+
+    設計書：スキーマ（schemas）/貸出・返却操作_v0.1.0.md
+    """
+
+    id: int
+    asset_number: str
+    equipment_name: str
+    applicant_name: str
+    start_date: date
+    due_date: date
+    purpose: str
+    status: str
+    lent_at: datetime
+    returned_at: datetime | None
+    return_note: str | None
