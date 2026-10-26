@@ -2,7 +2,7 @@
 
 ## スコープ
 
-[テーブル定義（models）_v0.1.0.md](../../../設計書/テーブル定義（models）_v0.1.0.md)に基づき、DB接続（SQLAlchemyのEngine・Session生成）とテーブルモデル（ORM）を実装する。加えて、Alembicによるマイグレーション環境（初期スキーマ作成）とPythonパッケージの依存関係定義を行う。
+[テーブル定義（models）_v1.0.0.md](../../../設計書/テーブル定義（models）_v1.0.0.md)に基づき、DB接続（SQLAlchemyのEngine・Session生成）とテーブルモデル（ORM）を実装する。加えて、Alembicによるマイグレーション環境（初期スキーマ作成）とPythonパッケージの依存関係定義を行う。
 
 ## 修正対象資材
 
